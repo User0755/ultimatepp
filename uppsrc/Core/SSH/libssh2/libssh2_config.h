@@ -81,11 +81,7 @@
 * Below patch, which applies to libssh2/comp.c, allows using the
 * Z compression on Upp::SSH Win32 and for static builds.
 */
-#if defined(flagWIN32) || defined(flagNOSO)
-#define UPP_ZLIB_INCLUDE <plugin/z/lib/zlib.h>
-#else
 #define UPP_ZLIB_INCLUDE <zlib.h>
-#endif
 
 /* Let us enable Z compression. */
 #define LIBSSH2_HAVE_ZLIB
