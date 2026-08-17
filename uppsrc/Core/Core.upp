@@ -19,7 +19,9 @@ library(WIN32) "kernel32 user32 ole32 oleaut32 uuid ws2_32 advapi32 shell32 winm
 
 library(OPENBSD) "pthread execinfo";
 
-library(WIN32) zs;
+library(WIN32 !SHARED) zs;
+
+library(WIN32 SHARED) zs;
 
 static_library(ANDROID) cpufeatures;
 

@@ -9,7 +9,7 @@ flags(LIBSSH2DEBUG) LIBSSH2DEBUG;
 uses
 	Core;
 
-library(POSIX) "crypto ssl z";
+library(POSIX) "crypto ssl";
 
 library(WIN32 MSC) "libssl libcrypto";
 
