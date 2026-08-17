@@ -5,8 +5,7 @@ acceptflags
 	MYSQLDLL;
 
 uses
-	Sql,
-	plugin\z;
+	Sql;
 
 library(WIN32) libmysql.lib;
 
