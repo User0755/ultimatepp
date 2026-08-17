@@ -5,9 +5,11 @@
 #define boolean int
 #undef FAR
 extern "C" {
-#include "lib/jinclude.h"
-#include "lib/jpeglib.h"
-#include "lib/jerror.h"
+//#include <jinclude.h>
+#include <jconfig.h>
+#include <jmorecfg.h>
+#include <jpeglib.h>
+#include <jerror.h>
 }
 #undef XINT32
 

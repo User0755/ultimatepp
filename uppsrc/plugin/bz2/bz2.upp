@@ -7,11 +7,13 @@ uses
 
 library(POSIX & !NOSO) bz2;
 
+library(WIN32) bz2;
+
+external_dependency(WIN32) bzip2;
+
 file
 	bz2.h,
 	bz2upp.cpp,
-	bzlib.c,
-	lib\LICENSE,
 	src.tpp,
 	Copying;
 

@@ -6,6 +6,10 @@ uses
 	Core,
 	Draw;
 
+library(WIN32 !MSC) libpng16.a;
+
+library(WIN32 MSC) libpng16;
+
 options
 	-DPNG_NO_READ_EXPAND,
 	-DPNG_NO_READ_SHIFT,
@@ -56,12 +60,11 @@ options
 
 pkg_config(POSIX !OSX !STATIC_PNG) libpng;
 
+external_dependency(WIN32) libpng;
+
 file
 	png.h,
-	lib\png.h,
-	pnglib.c,
 	pngupp.cpp,
-	pngreg.icpp,
 	Info readonly separator,
 	Copying;
 

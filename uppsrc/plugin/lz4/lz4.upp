@@ -3,12 +3,17 @@ description "LZ4 compressor (lower compression but very fast)\3770,128,128";
 uses
 	Core;
 
+library
+	lz4;
+
+external_dependency
+	lz4;
+
 file
 	lz4.h,
 	Compress.cpp,
 	Decompress.cpp,
 	util.cpp,
-	lib\LICENSE,
 	Copying,
 	src.tpp;
 

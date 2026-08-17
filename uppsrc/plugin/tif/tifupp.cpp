@@ -2,6 +2,9 @@
 #include "tif.h"
 #include <Painter/Painter.h>
 
+
+#include <fcntl.h> // 2026-08-17 - Added for O_RDWR, O_CREAT, ...
+
 #define	tif_int32 int32_t
 #define	tif_uint32 uint32_t
 
@@ -496,6 +499,10 @@ static int MapStream(thandle_t fd, tdata_t *pbase, toff_t *psize)
 static void UnmapStream(thandle_t fd, tdata_t base, toff_t size)
 {
 }
+
+// 2026-08-17 - Pulled in from now unavailable tiffiop.h:
+extern "C" int _TIFFgetMode(TIFFOpenOptions *opts, thandle_t clientdata, const char *mode, const char *module);
+
 
 struct ::tiff *TIFFFileStreamOpen(const char *filename, const char *mode)
 {

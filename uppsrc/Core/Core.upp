@@ -3,8 +3,6 @@ description "Non-GUI code. Streams, NTL containers, concrete types, Value, XML, 
 acceptflags
 	USEMALLOC;
 
-uses(WIN32 | NOSO) plugin\z;
-
 library(LINUX !ANDROID) "pthread dl rt";
 
 library(BSD !OSX !OPENBSD) "pthread rt execinfo";
@@ -21,9 +19,15 @@ library(WIN32) "kernel32 user32 ole32 oleaut32 uuid ws2_32 advapi32 shell32 winm
 
 library(OPENBSD) "pthread execinfo";
 
+library(WIN32 SHARED) z;
+
+library(WIN32 !SHARED) zs;
+
 static_library(ANDROID) cpufeatures;
 
 link(GCC POSIX STACKTRACE) -rdynamic;
+
+external_dependency(WIN32) zlib;
 
 file
 	Core.h options(BUILDER_OPTION) PCH,

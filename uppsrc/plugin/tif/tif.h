@@ -5,9 +5,12 @@
 
 struct tiff;
 
-#include <plugin/tif/lib/tiff.h>
-#include <plugin/tif/lib/tiffio.h>
-#include <plugin/tif/lib/tiffiop.h>
+#include <tiff.h>
+#include <tiffio.h>
+//#include <tiffiop.h>
+
+#include <tiffvers.h>
+#include <tiffconf.h>
 
 #undef int8
 #undef uint8
