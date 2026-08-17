@@ -2,9 +2,13 @@ description "OpenSSL based SSL support for Core\3770,128,128";
 
 library(POSIX) "crypto ssl";
 
-library(WIN32) "usp10 gdi32 crypt32 libssl libcrypto";
+library(WIN32) "usp10 gdi32 crypt32";
 
 library(OSX) "libcrypto.a libssl.a";
+
+library(WIN32 MSC) "libssl libcrypto";
+
+library(WIN32 !MSC) "ssl crypto";
 
 external_dependency(WIN32) openssl;
 
