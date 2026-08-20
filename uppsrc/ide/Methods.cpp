@@ -882,7 +882,7 @@ String Ide::GetIncludePath()
 
 #ifdef PLATFORM_WIN32
 	MergeWith(include_path, ";", GetExeDirFile("vcpkg") + "/installed/" + GetVcpkgTriplet(bm) + "/include");
-	MergeWith(include_path, ";", GetExeDirFile("vcpkg") + "/installed/x64-mingw-static-release/include");
+	//MergeWith(include_path, ";", GetExeDirFile("vcpkg") + "/installed/x64-mingw-static-release/include");
 #endif
 
 	return include_path;

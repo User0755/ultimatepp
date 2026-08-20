@@ -1,16 +1,11 @@
 #include <Draw/Draw.h>
 #include <setjmp.h>
-#include "jpg.h"
-#define HAVE_BOOLEAN
-#define boolean int
-#undef FAR
-extern "C" {
-//#include <jinclude.h>
-#include <jconfig.h>
-#include <jmorecfg.h>
-#include <jpeglib.h>
 #include <jerror.h>
-}
+#include <jpeglib.h>
+#include <turbojpeg.h>
+
+#include "jpg.h"
+
 #undef XINT32
 
 

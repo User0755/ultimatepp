@@ -6,7 +6,7 @@ uses
 	Core,
 	Draw;
 
-library(WIN32 !MSC) libpng16.a;
+library(WIN32 !MSC) png16;
 
 library(WIN32 MSC) libpng16;
 

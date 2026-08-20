@@ -51,7 +51,7 @@
 #define HAVE_STDLIB_H
 #if defined(flagGCC) || defined(flagCLANG)
 #define HAVE_ERRNO_H
-#define HAVE_UNISTD_H
+#define HAVE_UNISTD_H 1
 #define HAVE_SYS_TIME_H
 #endif
 #ifdef flagPOSIX

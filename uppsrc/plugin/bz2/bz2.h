@@ -97,4 +97,4 @@ String        BZ2Decompress(const String& data, Gate<int, int> progress = Null);
 
 }
 
-#endif//__Plugin_Z__
+#endif

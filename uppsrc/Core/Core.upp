@@ -21,7 +21,9 @@ library(OPENBSD) "pthread execinfo";
 
 library(WIN32 !SHARED) zs;
 
-library(WIN32 SHARED) zs;
+library(WIN32 SHARED MSC) z;
+
+library(WIN32 SHARED !MSC) z;
 
 static_library(ANDROID) cpufeatures;
 
