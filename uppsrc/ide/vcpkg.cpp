@@ -83,6 +83,7 @@ VcpkgDlg::VcpkgDlg()
 		UrepoConsole console;
 		console.System("git pull --no-rebase", GetFileFolder(VcpkgExe()));
 		console.System(VcpkgExe() + " update");
+		console.System(VcpkgExe() + " upgrade --no-dry-run");
 		console.Perform();
 	};
 	
