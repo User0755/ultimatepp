@@ -2,7 +2,7 @@
 #include <setjmp.h>
 #include <jerror.h>
 #include <jpeglib.h>
-#include <turbojpeg.h>
+//#include <turbojpeg.h>
 
 #include "jpg.h"
 
