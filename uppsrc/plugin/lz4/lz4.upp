@@ -6,8 +6,7 @@ uses
 library
 	lz4;
 
-external_dependency
-	lz4;
+external_dependency(WIN32) lz4;
 
 file
 	lz4.h,

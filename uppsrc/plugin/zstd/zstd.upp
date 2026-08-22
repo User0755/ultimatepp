@@ -6,8 +6,7 @@ uses
 library
 	zstd;
 
-external_dependency
-	zstd;
+external_dependency(WIN32) zstd;
 
 file
 	zstd.h,
