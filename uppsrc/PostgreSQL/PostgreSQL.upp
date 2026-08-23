@@ -6,9 +6,13 @@ acceptflags
 uses
 	Sql;
 
-library(WIN32) libpq.lib;
+library(WIN32 !MSC) "pq pgcommon pgfeutils pgport pgtypes ecpg ecpg_compat ssl crypto Secur32 Crypt32";
+
+library(WIN32 MSC) "pq pgcommon pgfeutils pgport pgtypes ecpg ecpg_compat libssl libcrypto Secur32 Crypt32";
 
 pkg_config(LINUX | FREEBSD | OPENBSD) libpq;
+
+external_dependency(WIN32) libpq;
 
 file
 	PostgreSQL.h,
