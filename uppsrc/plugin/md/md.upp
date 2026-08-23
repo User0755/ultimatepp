@@ -3,6 +3,11 @@ description "Markdown to QTF converter, based on MD4C library\3770,128,128";
 uses
 	Core;
 
+library
+	md4c;
+
+external_dependency(WIN32) md4c;
+
 file
 	Markdown.h,
 	Markdown.cpp,
@@ -11,7 +16,5 @@ file
 	issues,
 	Docs readonly separator,
 	src.tpp,
-	Library readonly separator,
-	MD4C/md4c.h,
-	MD4C/md4c.c;
+	Library readonly separator;
 
