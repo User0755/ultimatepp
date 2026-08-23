@@ -7,9 +7,15 @@ acceptflags
 uses
 	Sql;
 
-library(WIN32) libmysql.lib;
-
 library(OSX) mysqlclient;
+
+library(WIN32) "crypt32 secur32 shlwapi bcrypt";
+
+library(WIN32 !SHARED) mariadbclient;
+
+library(WIN32 SHARED !MSC) mariadb;
+
+library(WIN32 SHARED MSC) libmariadb;
 
 pkg_config(LINUX | FREEBSD | OPENBSD) "mysqlclient mariadb";
 
