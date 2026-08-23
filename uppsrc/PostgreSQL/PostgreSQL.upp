@@ -6,9 +6,15 @@ acceptflags
 uses
 	Sql;
 
-library(WIN32 !MSC) "pq pgcommon pgfeutils pgport pgtypes ecpg ecpg_compat ssl crypto Secur32 Crypt32";
+library(WIN32 !SHARED) "pq pgcommon pgport secur32 crypt32";
 
-library(WIN32 MSC) "pq pgcommon pgfeutils pgport pgtypes ecpg ecpg_compat libssl libcrypto Secur32 Crypt32";
+library(WIN32 !SHARED !MSC) "ssl crypto";
+
+library(WIN32 !SHARED MSC) "libssl libcrypto";
+
+library(WIN32 SHARED MSC) libpq;
+
+library(WIN32 SHARED !MSC) pq;
 
 pkg_config(LINUX | FREEBSD | OPENBSD) libpq;
 
