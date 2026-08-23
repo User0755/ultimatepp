@@ -19,6 +19,8 @@ library(WIN32 SHARED MSC) libmariadb;
 
 pkg_config(LINUX | FREEBSD | OPENBSD) "mysqlclient mariadb";
 
+external_dependency(WIN32) libmariadb;
+
 file
 	MySql.h,
 	MySqlSchema.h,
