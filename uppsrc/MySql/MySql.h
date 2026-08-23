@@ -2,6 +2,7 @@
 #define __mysql_h__
 
 // debian: sudo apt-get install libmysqlclient-dev
+// debian: sudo apt-get install libmariadb-dev
 
 #ifndef flagNOMYSQL
 
