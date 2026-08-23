@@ -6,7 +6,12 @@
 #ifndef flagNOMYSQL
 
 #include <Sql/Sql.h>
+
+#ifdef WIN32
 #include <../include/mysql/mysql.h>
+#else
+#include <mysql.h>
+#endif
 
 #ifndef MYSQL_PORT // missing in mariadb client
 #define MYSQL_PORT 3306
