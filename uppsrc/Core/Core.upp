@@ -3,6 +3,9 @@ description "Non-GUI code. Streams, NTL containers, concrete types, Value, XML, 
 acceptflags
 	USEMALLOC;
 
+library
+	lz4;
+
 library(LINUX !ANDROID) "pthread dl rt";
 
 library(BSD !OSX !OPENBSD) "pthread rt execinfo";
@@ -30,6 +33,8 @@ static_library(ANDROID) cpufeatures;
 link(GCC POSIX STACKTRACE) -rdynamic;
 
 external_dependency(WIN32) zlib;
+
+external_dependency(WIN32) lz4;
 
 file
 	Core.h options(BUILDER_OPTION) PCH,
@@ -177,7 +182,6 @@ file
 	Ptr.cpp,
 	z.h,
 	z.cpp,
-	lib\lz4.c,
 	Topic.h,
 	topic_group.h,
 	Topic.cpp,
