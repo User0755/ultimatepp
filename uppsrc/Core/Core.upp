@@ -4,7 +4,7 @@ acceptflags
 	USEMALLOC;
 
 library
-	lz4;
+	"lz4 xxhash";
 
 library(LINUX !ANDROID) "pthread dl rt";
 
@@ -193,7 +193,6 @@ file
 	MD5.cpp,
 	SHA1.cpp,
 	SHA256.cpp,
-	lib\xxhash.c,
 	xxHsh.cpp,
 	Web readonly separator,
 	Inet.h,
