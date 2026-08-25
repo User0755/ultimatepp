@@ -255,7 +255,7 @@ void VcpkgInstallDlg::Perform()
 		UrepoConsole console;
 		for(int i = 0; i < triplets.GetCount(); i++) {
 			if((bool)~*triplets.GetCtrl(i, 0)) {
-				if(console.System(VcpkgExe() + " install " + name + ":" + ts[i])) {
+				if(console.System(VcpkgExe() + " install " + name + ":" + ts[i] + " --recurse")) {
 					console.Log("Failed", SLtRed());
 					errors++;
 				}
