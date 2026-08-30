@@ -271,15 +271,17 @@ Vector<String> RequiredExternalDependencies(const String& manager)
 	keys << "BSD";
 #endif
 
-	int maxlen = -1;
 	for(int i = 0; i < wspc.GetCount(); i++) {
 		const Package& pkg = wspc.GetPackage(i);
+		int maxlen = -1; // find the most complicated entry
+		String ed;
 		for(const OptItem& m : pkg.external_dependency) {
 			if(MatchWhen(m.when, keys) && m.when.GetCount() > maxlen) {
+				ed = m.text;
 				maxlen = m.when.GetCount();
-				required.Add(m.text);
 			}
 		}
+		required.Append(Split(ed, ' '));
 	}
 	Sort(required);
 	return required;
