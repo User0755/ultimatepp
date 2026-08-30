@@ -5,6 +5,8 @@ struct Component {
     String supplier;
 
     String version;                // For shipped components (regardless of linking)
+	String purl;                    // PURL from package manager, if available
+	Vector<String> sourceDistributions;  // Upstream source archive URLs, if available
 
     bool isExternal = false;            // true for external dynamically linked platform/distro dependencies (not shipped)
 
@@ -32,14 +34,43 @@ String MakeBuild::CreateSBOM(const String& triplet)
 		m.licenses << p["licenseConcluded"];
 		m.homepage = p["homepage"];
 		m.originUrl = p["downloadLocation"];
+	
+		for(Value r : p["externalRefs"]) {
+			if(r["referenceType"] == "purl")
+				m.purl = r["referenceLocator"];
+		}
 	};
 	for(String x : required) {
-		Value spdx = ParseJSON(LoadFile(GetExeDirFile("vcpkg") + "/installed/" + triplet + "/share/" + x + "/vcpkg.spdx.json"));
+		Value spdx = ParseJSON(LoadFile(
+			GetExeDirFile("vcpkg") + "/installed/" + triplet +
+			"/share/" + x + "/vcpkg.spdx.json"
+		));
+	
+		Value port;
+	
 		for(Value p : spdx["packages"]) {
 			if(p["SPDXID"] == "SPDXRef-port") {
-				ReadComponent(p);
+				port = p;
 				break;
 			}
+		}
+	
+		if(IsNull(port))
+			continue;
+	
+		ReadComponent(port);
+	
+		Component& component = cs.Top();
+	
+		for(Value p : spdx["packages"]) {
+			String id = p["SPDXID"];
+	
+			if(!id.StartsWith("SPDXRef-resource-"))
+				continue;
+	
+			String url = p["downloadLocation"];
+			if(!IsNull(url) && url != "NONE")
+				component.sourceDistributions << url;
 		}
 	}
 	
@@ -85,12 +116,19 @@ String MakeBuild::CreateSBOM(const String& triplet)
 		if(!IsNull(c.originUrl))
 			extRefs << Json("type", "distribution")
 			               ("url", c.originUrl);
+		
+		for(const String& url : c.sourceDistributions)
+			if(!IsNull(url))
+				extRefs << Json("type", "source-distribution")
+				               ("url", url);
 
-				
 		Json component;
 		component("type", "library")
 		         ("name", c.name)
 		         ("version", c.version);
+
+		if(!IsNull(c.purl))
+			component("purl", c.purl);
 
 		if(licenses)
 			component("licenses", licenses);
