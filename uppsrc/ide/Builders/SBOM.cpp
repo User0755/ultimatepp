@@ -42,35 +42,23 @@ String MakeBuild::CreateSBOM(const String& triplet)
 	};
 	for(String x : required) {
 		Value spdx = ParseJSON(LoadFile(
-			GetExeDirFile("vcpkg") + "/installed/" + triplet +
-			"/share/" + x + "/vcpkg.spdx.json"
+			GetExeDirFile("vcpkg") + "/installed/" + triplet + "/share/" + x + "/vcpkg.spdx.json"
 		));
-	
-		Value port;
 	
 		for(Value p : spdx["packages"]) {
 			if(p["SPDXID"] == "SPDXRef-port") {
-				port = p;
+				ReadComponent(p);
+				Component& component = cs.Top();
+				for(Value p : spdx["packages"]) {
+					String id = p["SPDXID"];
+					if(id.StartsWith("SPDXRef-resource-")) {
+						String url = p["downloadLocation"];
+						if(!IsNull(url) && url != "NONE")
+							component.sourceDistributions << url;
+					}
+				}
 				break;
 			}
-		}
-	
-		if(IsNull(port))
-			continue;
-	
-		ReadComponent(port);
-	
-		Component& component = cs.Top();
-	
-		for(Value p : spdx["packages"]) {
-			String id = p["SPDXID"];
-	
-			if(!id.StartsWith("SPDXRef-resource-"))
-				continue;
-	
-			String url = p["downloadLocation"];
-			if(!IsNull(url) && url != "NONE")
-				component.sourceDistributions << url;
 		}
 	}
 	
