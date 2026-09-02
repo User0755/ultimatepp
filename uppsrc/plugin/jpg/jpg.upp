@@ -8,7 +8,7 @@ uses
 library
 	jpeg;
 
-external_dependency(WIN32) jpeg;
+external_dependency(WIN32) libjpeg-turbo;
 
 file
 	jpg.h,
