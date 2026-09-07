@@ -61,7 +61,7 @@ void TiffAllocStat()
 			<< ", alloc = " << size_alloc_calls[i] << ", frees = " << size_free_calls[i]);
 }
 #endif
-
+/*
 extern "C" tdata_t _TIFFmalloc(tsize_t s)
 {
 	byte *p = new byte[s + 16];
@@ -116,6 +116,7 @@ extern "C" tdata_t _TIFFrealloc(tdata_t p, tsize_t s)
 extern "C" void _TIFFmemset(void* p, int v, tmsize_t c)           { memset(p, v, c); }
 extern "C" void _TIFFmemcpy(void* d, const void *s, tmsize_t c) { memcpy(d, s, c); }
 extern "C" int  _TIFFmemcmp(const void *p1, const void *p2, tmsize_t c) { return memcmp(p1, p2, c); }
+*/
 
 /*
 static void Blt2to4(byte *dest, const byte *src, unsigned count)
@@ -645,9 +646,10 @@ struct TIFRaster::Data : public TIFFRGBAImage {
 
 extern "C" {
 
+/*
 TIFFErrorHandler _TIFFwarningHandler = TIFRaster::Data::Warning;
 TIFFErrorHandler _TIFFerrorHandler   = TIFRaster::Data::Error;
-
+*/
 };
 
 static void packTileRGB(TIFRaster::Data *helper, uint32 x, uint32 y, uint32 w, uint32 h)

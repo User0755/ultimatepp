@@ -4,7 +4,7 @@
 #include <Draw/Draw.h>
 
 struct tiff;
-
+#define TIFF_DISABLE_DEPRECATED
 #include <tiff.h>
 #include <tiffio.h>
 //#include <tiffiop.h>
