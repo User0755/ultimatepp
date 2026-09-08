@@ -8,6 +8,8 @@ library
 
 external_dependency(VCPKG) liblzma;
 
+external_dependency(DPKG) liblzma5;
+
 file
 	lzma.h,
 	lzma.cpp,

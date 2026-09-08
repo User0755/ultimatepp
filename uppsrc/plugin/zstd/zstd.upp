@@ -8,6 +8,8 @@ library
 
 external_dependency(VCPKG) zstd;
 
+external_dependency(DPKG) libzstd1;
+
 file
 	zstd.h,
 	Compress.cpp,

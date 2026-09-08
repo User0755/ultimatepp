@@ -8,6 +8,8 @@ library
 
 external_dependency(VCPKG) md4c;
 
+external_dependency(DPKG) libmd4c0;
+
 file
 	Markdown.h,
 	Markdown.cpp,

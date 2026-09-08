@@ -36,9 +36,11 @@ external_dependency(VCPKG | DPKG) lz4;
 
 external_dependency(VCPKG | DPKG) xxhash;
 
-external_dependency(DPKG) z;
+external_dependency(DPKG) zlib1g;
 
-external_dependency(DPKG) libc6;
+external_dependency(DPKG) liblz4-1;
+
+external_dependency(DPKG) libxxhash0;
 
 file
 	Core.h options(BUILDER_OPTION) PCH,

@@ -10,6 +10,8 @@ library
 
 external_dependency(VCPKG) libjpeg-turbo;
 
+external_dependency(DPKG) libjpeg-turbo8;
+
 file
 	jpg.h,
 	jpgupp.cpp,
