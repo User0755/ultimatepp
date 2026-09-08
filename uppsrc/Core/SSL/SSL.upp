@@ -10,7 +10,7 @@ library(WIN32 MSC) "libcrypto libssl";
 
 library(WIN32 !MSC) "crypto ssl";
 
-external_dependency(WIN32) openssl;
+external_dependency(VCPKG | DPKG) openssl;
 
 file
 	SSL.h,

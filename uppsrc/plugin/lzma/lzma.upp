@@ -6,7 +6,7 @@ uses
 library
 	lzma;
 
-external_dependency(WIN32) liblzma;
+external_dependency(VCPKG) liblzma;
 
 file
 	lzma.h,

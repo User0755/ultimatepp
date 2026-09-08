@@ -6,7 +6,7 @@ uses
 library
 	sqlcipher;
 
-external_dependency(WIN32) sqlcipher;
+external_dependency(VCPKG) "sqlcipher license(\"weird license\")";
 
 file
 	SQLCipher.h,

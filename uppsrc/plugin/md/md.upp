@@ -6,7 +6,7 @@ uses
 library
 	md4c;
 
-external_dependency(WIN32) md4c;
+external_dependency(VCPKG) md4c;
 
 file
 	Markdown.h,

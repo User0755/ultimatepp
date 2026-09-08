@@ -12,7 +12,7 @@ library(WIN32 MSC) libpng16;
 
 pkg_config(POSIX !OSX !STATIC_PNG) libpng;
 
-external_dependency(WIN32) libpng;
+external_dependency(VCPKG) libpng;
 
 file
 	png.h,

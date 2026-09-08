@@ -6,7 +6,7 @@ uses
 library
 	zstd;
 
-external_dependency(WIN32) zstd;
+external_dependency(VCPKG) zstd;
 
 file
 	zstd.h,
