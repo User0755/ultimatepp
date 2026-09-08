@@ -32,9 +32,9 @@ link(GCC POSIX STACKTRACE) -rdynamic;
 
 external_dependency(VCPKG) zlib;
 
-external_dependency(VCPKG | DPKG) lz4;
+external_dependency(VCPKG) lz4;
 
-external_dependency(VCPKG | DPKG) xxhash;
+external_dependency(VCPKG) xxhash;
 
 external_dependency(DPKG) zlib1g;
 
