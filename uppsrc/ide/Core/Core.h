@@ -449,6 +449,7 @@ public:
 	bool                     noblitz;
 	bool                     nowarnings;
 	String                   description;
+	String                   license_id;
 	Vector<String>           accepts;
 	Array<OptItem>           flag;
 	Array<OptItem>           uses;
