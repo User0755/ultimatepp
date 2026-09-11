@@ -10,7 +10,7 @@ library
 
 external_dependency(VCPKG) libjpeg-turbo;
 
-external_dependency(DPKG) libjpeg62-turbo-dev;
+external_dependency(DPKG) libjpeg-turbo8-dev;
 
 file
 	jpg.h,
