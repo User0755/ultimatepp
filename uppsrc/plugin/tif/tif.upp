@@ -11,6 +11,12 @@ library
 
 external_dependency(WIN32) tiff;
 
+external_dependency(DPKG) libtiff-dev;
+
+external_dependency(DPKG) liblzma-dev;
+
+external_dependency(DPKG) libjpeg62-turbo-dev;
+
 file
 	tif.h,
 	tifupp.cpp,

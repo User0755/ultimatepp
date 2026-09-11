@@ -6,7 +6,7 @@ uses
 library
 	sqlcipher;
 
-external_dependency(VCPKG) "sqlcipher license(\"weird license\")";
+external_dependency(VCPKG) sqlcipher;
 
 file
 	SQLCipher.h,

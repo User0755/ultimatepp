@@ -14,7 +14,7 @@ pkg_config(POSIX !OSX !STATIC_PNG) libpng;
 
 external_dependency(VCPKG) libpng;
 
-external_dependency(DPKG) libpng16-16t64;
+external_dependency(DPKG) libpng-dev;
 
 file
 	png.h,

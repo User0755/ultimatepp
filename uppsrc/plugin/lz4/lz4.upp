@@ -8,7 +8,7 @@ library
 
 external_dependency(VCPKG) lz4;
 
-external_dependency(DPKG) liblz4-1;
+external_dependency(DPKG) liblz4-dev;
 
 file
 	lz4.h,

@@ -8,7 +8,7 @@ library
 
 external_dependency(VCPKG) zstd;
 
-external_dependency(DPKG) libzstd1;
+external_dependency(DPKG) libzstd-dev;
 
 file
 	zstd.h,
