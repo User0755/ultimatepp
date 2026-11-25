@@ -3,10 +3,6 @@
 
 #include <Draw/Draw.h>
 
-#ifdef PLATFORM_WIN32
-#include <wincodec.h>
-#endif
-
 namespace Upp {
 
 #ifdef PLATFORM_WIN32
@@ -101,6 +97,11 @@ public:
 };
 
 bool IsWICJPG(StreamRaster *s);
+
+// Diagnostic: human-readable trace of the last encoder run(s):
+// "<container>:<stage>=0x<hresult>;..." Accumulated across attempts.
+// Empty when everything succeeded.
+String WICDiag();
 
 #else
 // Windows-only package. Nothing to expose on other platforms; the header

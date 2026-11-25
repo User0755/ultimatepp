@@ -3,7 +3,7 @@ description "Windows Imaging Component (WIC) raster support\3770,128,128";
 uses
 	Draw;
 
-library(WIN32) "ole32";
+library(WIN32) ole32;
 
 file
 	wic.h,
