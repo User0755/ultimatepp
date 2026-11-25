@@ -32,6 +32,12 @@ public:
 	virtual int     GetPaletteCount();
 	virtual const RGBA *GetPalette();
 	virtual const RasterFormat *GetFormat();
+	virtual int     GetPageCount();
+	virtual int     GetActivePage() const;
+	virtual void    SeekPage(int page);
+	virtual int     GetPageDelay(int n);
+	virtual Rect    GetPageRect(int n);
+	virtual int     GetPageDisposal(int n);
 
 	WICRaster();
 	virtual ~WICRaster();
@@ -102,6 +108,10 @@ bool IsWICJPG(StreamRaster *s);
 // "<container>:<stage>=0x<hresult>;..." Accumulated across attempts.
 // Empty when everything succeeded.
 String WICDiag();
+
+// Compilation timestamp of wicupp.cpp - lets tests verify they run
+// against a freshly built plugin.
+const char *WICBuildStamp();
 
 #else
 // Windows-only package. Nothing to expose on other platforms; the header

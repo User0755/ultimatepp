@@ -55,6 +55,13 @@ String WICDiag()
 	return sWICDiag();
 }
 
+// Build stamp: lets tests verify they are running against a freshly
+// compiled plugin (Blitz/object caching otherwise hides stale binaries).
+const char *WICBuildStamp()
+{
+	return __DATE__ " " __TIME__;
+}
+
 #define WICTRACE(stage, hr)  sWICDiag() << sWICStage(stage, hr) << "; "
 
 static const char *sWICContainerName(const GUID& g)
@@ -277,28 +284,91 @@ public:
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// WICRaster::Data - decodes the whole stream to 32bppBGRA (= U++ RGBA layout on Windows)
+// Metadata helper - reads an integer property through WIC's query reader.
+// Missing properties are a normal situation (e.g. no graphic control
+// extension in a GIF), in which case the default is returned.
+
+static int sWICMetaInt(IWICMetadataQueryReader *q, const wchar_t *expr, int defval)
+{
+	PROPVARIANT v;
+	PropVariantInit(&v);
+	HRESULT hr = q->GetMetadataByName(expr, &v);
+	if(FAILED(hr)) {
+		sWICDiag() << "metamiss(" << WString(expr).ToString() << "); ";
+		return defval;
+	}
+	int r = defval;
+	switch(v.vt) {
+	case VT_UI1: r = v.bVal; break;
+	case VT_UI2: r = v.uiVal; break;
+	case VT_UI4: r = v.ulVal; break;
+	case VT_I2:  r = v.iVal; break;
+	case VT_I4:  r = v.lVal; break;
+	}
+	PropVariantClear(&v);
+	return r;
+}
+
+// Sanity limit for decompressed size: geo imaging may handle very large
+// rasters, so allow up to 4 GB of decoded RGBA data (1 gigapixel); anything
+// larger is rejected before any big allocation happens.
+static const int64 WIC_MAX_DECODE_BYTES = INT64_C(4) * 1024 * 1024 * 1024;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// WICRaster::Data - multi-frame WIC decoder; serves the active page's rows
+// as 32bppBGRA (= U++ RGBA layout on Windows).
 
 class WICRaster::Data {
 public:
-	Size          size;
-	Buffer<RGBA>  pix;
-	RasterFormat  fmt;
-	bool          alpha;
+	struct PageInfo {
+		Rect  rect;      // placement of the frame (GIF subimages), full frame otherwise
+		int   delay;     // delay in 1/100 sec (GIF)
+		int   disposal;  // disposal method (GIF)
+	};
+
+	IWICBitmapDecoder *dec;
+	IStream           *pis;     // decoder reads pixel data lazily from this
+	                             // stream - it must outlive dec (paging)
+	HGLOBAL            hg;      // backing store of pis, freed with it
+
+	Data() { dec = NULL; pis = NULL; hg = NULL; page_count = 0; page_index = 0; alpha = false; }
+	int                page_count;
+	int                page_index;
+	Array<PageInfo>    pages;
+	Size               size;
+	Buffer<RGBA>       pix;
+	RasterFormat       fmt;
+	bool               alpha;
 
 	bool Create(Stream& stream);
+	bool DecodeFrame(int page);
+
+	~Data()
+	{
+		if(dec)
+			dec->Release();
+		if(pis)
+			pis->Release();
+		if(hg)
+			GlobalFree(hg);
+	}
 };
 
 bool WICRaster::Data::Create(Stream& stream)
 {
 	String data = LoadStream(stream);
 
-	if(data.IsEmpty())
+	if(data.IsEmpty()) {
+		sWICDiag() << "decode: empty data; ";
 		return false;
+	}
 
 	WICGuard& w = WIC();
-	if(!w.factory)
+	if(!w.factory) {
+		sWICDiag() << "decode: no factory; ";
 		return false;
+	}
+	sWICDiag() << "trydecode(" << data.GetCount() << "); ";
 
 	IStream *pis = NULL;
 	HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, (SIZE_T)data.GetCount());
@@ -320,66 +390,235 @@ bool WICRaster::Data::Create(Stream& stream)
 	}
 
 	bool ok = false;
-
-	IWICBitmapDecoder *dec = NULL;
-	hr = w->CreateDecoderFromStream(pis, NULL, WICDecodeMetadataCacheOnDemand, &dec);
-	if(SUCCEEDED(hr)) {
+	// Store the stream lifetime in the members: the WIC decoder reads
+	// pixel data lazily on SeekPage, so the backing stream must outlive
+	// dec. Both are released in ~Data. (Locals deliberately reused for
+	// creation; no shadowing resets here.)
+	this->pis = pis;
+	this->hg = hg;
+	dec = NULL;
+	HRESULT dhr = w->CreateDecoderFromStream(pis, NULL, WICDecodeMetadataCacheOnDemand, &dec);
+	if(FAILED(dhr))
+		WICTRACE("createdecoder", dhr);
+	if(SUCCEEDED(dhr)) {
 		GUID container;
-		if(SUCCEEDED(dec->GetContainerFormat(&container)) &&
+		HRESULT chr = dec->GetContainerFormat(&container);
+		if(FAILED(chr))
+			WICTRACE("containerformat", chr);
+		if(SUCCEEDED(chr) &&
 		   (IsEqualGUID(container, GUID_ContainerFormatPng) ||
 		    IsEqualGUID(container, GUID_ContainerFormatJpeg) ||
 		    IsEqualGUID(container, GUID_ContainerFormatTiff) ||
 		    IsEqualGUID(container, GUID_ContainerFormatBmp) ||
 		    IsEqualGUID(container, GUID_ContainerFormatGif))) {
-			IWICBitmapFrameDecode *frame = NULL;
-			if(SUCCEEDED(dec->GetFrame(0, &frame))) {
-				UINT cw = 0, ch = 0;
-				// Sanity limit for decompressed size: geo imaging may handle
-				// very large rasters, so allow up to 4 GB of decoded RGBA
-				// data (1 gigapixel); anything larger is rejected before
-				// any big allocation happens.
-				const int64 WIC_MAX_DECODE_BYTES = INT64_C(4) * 1024 * 1024 * 1024;
-				if(SUCCEEDED(frame->GetSize(&cw, &ch)) && cw > 0 && ch > 0 &&
-				   cw <= 0xFFFF && ch <= 0xFFFF &&
-				   (int64)cw * (int64)ch * 4 <= WIC_MAX_DECODE_BYTES) {
-					size = Size(cw, ch);
+			UINT fc = 0;
+			HRESULT ghr = dec->GetFrameCount(&fc);
+			if(FAILED(ghr))
+				WICTRACE("getframecount", ghr);
+			if(fc == 0)
+				sWICDiag() << "nopages; ";
+			if(SUCCEEDED(ghr) && fc > 0 && fc <= 0xFFFF) {
+				page_count = (int)fc;
 
-					IWICFormatConverter *conv = NULL;
-					IWICBitmapSource *src = frame;
-					if(SUCCEEDED(w->CreateFormatConverter(&conv))) {
-						if(SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA,
-						                              WICBitmapDitherTypeNone, NULL, 0,
-						                              WICBitmapPaletteTypeCustom)))
-							src = conv;
-						else
-							conv->Release();
+				bool isgif = IsEqualGUID(container, GUID_ContainerFormatGif);
+
+				for(UINT i = 0; i < fc; i++) {
+					PageInfo& pg = pages.Add();
+					pg.rect = Rect(0, 0, 0, 0);
+					pg.delay = 0;
+					pg.disposal = 0;
+
+					IWICBitmapFrameDecode *frame = NULL;
+					HRESULT fhr = dec->GetFrame(i, &frame);
+					if(FAILED(fhr)) {
+						WICTRACE("enumframe", fhr);
+						pages.Drop();
+						continue;
 					}
+					UINT cw = 0, ch = 0;
+					if(SUCCEEDED(frame->GetSize(&cw, &ch)) && cw > 0 && ch > 0 &&
+					   cw <= 0xFFFF && ch <= 0xFFFF) {
+						int x = 0, y = 0;
 
-					pix.Alloc(size.cx * size.cy);
-					hr = src->CopyPixels(NULL, size.cx * 4, (UINT)size.cx * size.cy * 4,
-					                     (BYTE *)~pix);
-					ok = SUCCEEDED(hr);
-
-					if(ok) {
-						alpha = false;
-						for(const RGBA *p = ~pix, *e = p + size.cx * size.cy; p < e; p++)
-							if(p->a != 255) {
-								alpha = true;
-								break;
+						IWICMetadataQueryReader *q = NULL;
+						HRESULT qhr = frame->GetMetadataQueryReader(&q);
+						if(FAILED(qhr))
+							WICTRACE("metareader", qhr);
+						if(SUCCEEDED(qhr)) {
+							// GIF frames are subimages placed at Left/Top with
+							// per-frame timing in the graphic control extension.
+							// Properties may legitimately be missing - defaults
+							// are harmless.
+							if(isgif) {
+								x = sWICMetaInt(q, L"/imgdesc/Left", 0);
+								y = sWICMetaInt(q, L"/imgdesc/Top", 0);
+								pg.delay = sWICMetaInt(q, L"/grctlext/Delay",
+									sWICMetaInt(q, L"/imgdesc/grctlext/Delay", 0));
+								pg.disposal = sWICMetaInt(q, L"/grctlext/Disposal",
+									sWICMetaInt(q, L"/imgdesc/grctlext/DisposalMethod", 0));
 							}
+							q->Release();
+						}
+						pg.rect = Rect(x, y, x + (int)cw, y + (int)ch);
 					}
-					fmt.SetRGBA();
-
-					if(src == conv)
-						conv->Release();
+					frame->Release();
 				}
-				frame->Release();
+
+				if(pages.GetCount())
+					ok = DecodeFrame(0); // decode the first page eagerly
 			}
 		}
-		dec->Release();
 	}
-	pis->Release();
-	GlobalFree(hg);
+	// pis and hg are intentionally NOT released here: the WIC decoder reads
+	// pixel data lazily on SeekPage, so the stream must outlive dec.
+	// They are released in ~Data.
+
+	if(!ok) {
+		pix.Clear();
+		pages.Clear();
+		page_count = 0;
+		if(dec) {
+			dec->Release();
+			dec = NULL;
+		}
+	}
+
+	return ok;
+}
+
+bool WICRaster::Data::DecodeFrame(int page)
+{
+	WICGuard& w = WIC();
+	if(!w.factory || !dec || page < 0 || page >= page_count)
+		return false;
+
+	IWICBitmapFrameDecode *frame = NULL;
+	HRESULT hr = dec->GetFrame(page, &frame);
+	if(FAILED(hr)) {
+		WICTRACE("getframe", hr);
+		return false;
+	}
+
+	bool ok = false;
+
+	UINT cw = 0, ch = 0;
+	HRESULT shr = frame->GetSize(&cw, &ch);
+	if(FAILED(shr))
+		WICTRACE("framesize", shr);
+	if(SUCCEEDED(shr) && cw > 0 && ch > 0 &&
+	   cw <= 0xFFFF && ch <= 0xFFFF &&
+	   (int64)cw * (int64)ch * 4 <= WIC_MAX_DECODE_BYTES) {
+		size = Size(cw, ch);
+		page_index = page;
+
+		GUID fpf = GUID_WICPixelFormatDontCare;
+		HRESULT ffhr = frame->GetPixelFormat(&fpf);
+		if(FAILED(ffhr))
+			WICTRACE("framepixfmt", ffhr);
+		int bpp = 0;
+		if(SUCCEEDED(ffhr)) {
+			if(IsEqualGUID(fpf, GUID_WICPixelFormat8bppIndexed))      bpp = 8;
+			else if(IsEqualGUID(fpf, GUID_WICPixelFormat4bppIndexed)) bpp = 4;
+			else if(IsEqualGUID(fpf, GUID_WICPixelFormat2bppIndexed)) bpp = 2;
+			else if(IsEqualGUID(fpf, GUID_WICPixelFormat1bppIndexed)) bpp = 1;
+		}
+
+		if(bpp) {
+			// Indexed source: decode the index plane and map through the
+			// frame palette ourselves. The IWICFormatConverter path yields
+			// S_OK with all-black output for indexed GIF frames; manual
+			// mapping is deterministic and also exposes the raw indices
+			// for diagnostics.
+			IWICPalette *spal = NULL;
+			if(SUCCEEDED(w->CreatePalette(&spal))) {
+				HRESULT phr = frame->CopyPalette(spal);
+				if(SUCCEEDED(phr)) {
+					UINT nc = 0;
+					spal->GetColorCount(&nc);
+					Buffer<WICColor> cols(max<int>((int)nc, 1));
+					UINT got = 0;
+					if(nc)
+						spal->GetColors(nc, ~cols, &got);
+					int stride = (size.cx * bpp + 7) / 8;
+					int total = stride * size.cy;
+					Buffer<byte> raw(max(total, 1));
+					hr = frame->CopyPixels(NULL, stride, total, ~raw);
+					ok = SUCCEEDED(hr);
+					if(FAILED(hr))
+						WICTRACE("rawcopypixels", hr);
+					if(ok) {
+						sWICDiag() << "idx[" << (int)raw[0] << ".." << (int)raw[total - 1]
+						           << "] " << bpp << "bpp/" << (int)got << "pal; ";
+						pix.Alloc(size.cx * size.cy);
+						int mask = (1 << bpp) - 1;
+						for(int y = 0; y < size.cy; y++) {
+							const byte *srow = ~raw + y * stride;
+							RGBA *drow = ~pix + y * size.cx;
+							for(int x = 0; x < size.cx; x++) {
+								int shift = 8 - bpp - ((x * bpp) & 7);
+								int idx = (srow[(x * bpp) >> 3] >> shift) & mask;
+								dword c = idx < (int)got ? cols[idx] : 0xFF000000;
+								drow[x].r = byte((c >> 16) & 0xFF);
+								drow[x].g = byte((c >> 8) & 0xFF);
+								drow[x].b = byte(c & 0xFF);
+								drow[x].a = byte((c >> 24) & 0xFF);
+							}
+						}
+					}
+				}
+				else
+					WICTRACE("framepal", phr);
+				spal->Release();
+			}
+			else
+				sWICDiag() << "nopalfac; ";
+			fmt.SetRGBA();
+		}
+		else {
+			// Non-indexed source: converter path (as before, no palette
+			// involved - the earlier palette passing is irrelevant for a
+			// non-indexed destination).
+			IWICFormatConverter *conv = NULL;
+			IWICBitmapSource *src = frame;
+			if(SUCCEEDED(w->CreateFormatConverter(&conv))) {
+				HRESULT chr = conv->Initialize(frame, GUID_WICPixelFormat32bppBGRA,
+				                              WICBitmapDitherTypeNone, NULL,
+				                              0, WICBitmapPaletteTypeCustom);
+				if(SUCCEEDED(chr))
+					src = conv;
+				else {
+					WICTRACE("convinit", chr);
+					conv->Release();
+				}
+			}
+			else
+				sWICDiag() << "noconv; ";
+
+			pix.Alloc(size.cx * size.cy);
+			memset(~pix, 0, sizeof(RGBA) * size.cx * size.cy); // zero-fill: distinguishes 'copy failed' from 'decoded black'
+			hr = src->CopyPixels(NULL, size.cx * 4, (UINT)size.cx * size.cy * 4,
+			                     (BYTE *)~pix);
+			ok = SUCCEEDED(hr);
+			if(FAILED(hr))
+				WICTRACE("copypixels", hr);
+
+			fmt.SetRGBA();
+
+			if(src == conv)
+				conv->Release();
+		}
+
+		if(ok) {
+			alpha = false;
+			for(const RGBA *p = ~pix, *e = p + size.cx * size.cy; p < e; p++)
+				if(p->a != 255) {
+					alpha = true;
+					break;
+				}
+		}
+	}
+
+	frame->Release();
 
 	if(!ok)
 		pix.Clear();
@@ -415,6 +654,7 @@ Raster::Info WICRaster::GetInfo()
 	if(data) {
 		info.bpp = 32;
 		info.kind = data->alpha ? IMAGE_ALPHA : IMAGE_OPAQUE;
+		info.dots = data->size;
 	}
 	return info;
 }
@@ -437,6 +677,43 @@ const RGBA *WICRaster::GetPalette()
 const RasterFormat *WICRaster::GetFormat()
 {
 	return data ? &data->fmt : NULL;
+}
+
+int WICRaster::GetPageCount()
+{
+	return data ? data->page_count : 0;
+}
+
+int WICRaster::GetActivePage() const
+{
+	return data ? data->page_index : 0;
+}
+
+void WICRaster::SeekPage(int page)
+{
+	if(data)
+		data->DecodeFrame(page);
+}
+
+int WICRaster::GetPageDelay(int n)
+{
+	if(!data || n < 0 || n >= data->pages.GetCount())
+		return 0;
+	return data->pages[n].delay;
+}
+
+Rect WICRaster::GetPageRect(int n)
+{
+	if(!data || n < 0 || n >= data->pages.GetCount())
+		return Rect(0, 0, 0, 0);
+	return data->pages[n].rect;
+}
+
+int WICRaster::GetPageDisposal(int n)
+{
+	if(!data || n < 0 || n >= data->pages.GetCount())
+		return 0;
+	return data->pages[n].disposal;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -735,6 +1012,7 @@ bool IsWICJPG(StreamRaster *s)
 }
 
 INITIALIZER(WICRaster) {
+	sWICDiag() << "wic-registered; ";
 	StreamRaster::Register<WICRaster>();
 	SetIsJPGFn(IsWICJPG);
 }
