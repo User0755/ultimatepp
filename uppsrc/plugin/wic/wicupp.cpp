@@ -119,7 +119,9 @@ public:
 static WICGuard& WIC()
 {
 	static WICGuard w;
-	w.Init();
+	ONCELOCK {
+		w.Init();
+	}
 	return w;
 }
 
@@ -332,8 +334,14 @@ bool WICRaster::Data::Create(Stream& stream)
 			IWICBitmapFrameDecode *frame = NULL;
 			if(SUCCEEDED(dec->GetFrame(0, &frame))) {
 				UINT cw = 0, ch = 0;
+				// Sanity limit for decompressed size: geo imaging may handle
+				// very large rasters, so allow up to 4 GB of decoded RGBA
+				// data (1 gigapixel); anything larger is rejected before
+				// any big allocation happens.
+				const int64 WIC_MAX_DECODE_BYTES = INT64_C(4) * 1024 * 1024 * 1024;
 				if(SUCCEEDED(frame->GetSize(&cw, &ch)) && cw > 0 && ch > 0 &&
-				   cw <= 0xFFFF && ch <= 0xFFFF) {
+				   cw <= 0xFFFF && ch <= 0xFFFF &&
+				   (int64)cw * (int64)ch * 4 <= WIC_MAX_DECODE_BYTES) {
 					size = Size(cw, ch);
 
 					IWICFormatConverter *conv = NULL;
@@ -565,7 +573,7 @@ bool WICStreamEncoder::Data::Commit()
 		return false;
 	}
 	sWICDiag() << "bytes=" << len << "; ";
-	stream->Put(out->Ptr(), (int)len);
+	stream->Put64(out->Ptr(), len);
 	return true;
 }
 
