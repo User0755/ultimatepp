@@ -38,7 +38,10 @@ public:
 	virtual int     GetPageDelay(int n);
 	virtual Rect    GetPageRect(int n);
 	virtual int     GetPageDisposal(int n);
-
+	
+	virtual Value   GetMetaData(String id);
+	virtual void    EnumMetaData(Vector<String>& id_list);
+	
 	WICRaster();
 	virtual ~WICRaster();
 };

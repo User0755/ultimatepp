@@ -315,6 +315,169 @@ static int sWICMetaInt(IWICMetadataQueryReader *q, const wchar_t *expr, int defv
 static const int64 WIC_MAX_DECODE_BYTES = INT64_C(4) * 1024 * 1024 * 1024;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// WicIFDTag / WicIFDParser - minimal TIFF IFD reader for GeoTIFF tags.
+//
+// We parse the file bytes ourselves because WIC's metadata query system does
+// not expose arbitrary IFD tags on every Windows build (verified empirically:
+// frame- and container-level readers, all path dialects, both cache modes all
+// miss even registered tags). The IFD format is small, stable and fully
+// specified, so this path has no version-dependent behavior.
+//
+// Deliberate scope: types BYTE(1), ASCII(2), SHORT(3), LONG(4), DOUBLE(12).
+// Values above 4 bytes live at a referenced offset and are bounds-checked;
+// per-tag payload capped at 1 MB; IFD chain capped at 256 pages.
+
+struct WicIFDTag {
+	word  tag;
+	word  type;
+	dword count;
+	Value value;      // int, double, String, or ValueArray of those
+};
+
+class WicIFDParser {
+	const byte *p = NULL;
+	int    len = 0;
+	bool   le = true;
+
+	word  W16(int off) const  { return le ? word(p[off] | (p[off + 1] << 8))
+	                                     : word((p[off] << 8) | p[off + 1]); }
+	dword W32(int off) const  { return le
+		? dword(p[off]) | (dword(p[off + 1]) << 8) | (dword(p[off + 2]) << 16) | (dword(p[off + 3]) << 24)
+		: (dword(p[off]) << 24) | (dword(p[off + 1]) << 16) | (dword(p[off + 2]) << 8) | dword(p[off + 3]); }
+
+	double W64(int off) const
+	{
+		byte buf[8];
+		memcpy(buf, p + off, 8);
+		if(!le) {
+			byte t;
+			t = buf[0]; buf[0] = buf[7]; buf[7] = t;
+			t = buf[1]; buf[1] = buf[6]; buf[6] = t;
+			t = buf[2]; buf[2] = buf[5]; buf[5] = t;
+			t = buf[3]; buf[3] = buf[4]; buf[4] = t;
+		}
+		double d;
+		memcpy(&d, buf, 8);
+		return d;
+	}
+
+	static int TypeSize(int type)
+	{
+		switch(type) {
+		case 1:  case 2: return 1;   // BYTE, ASCII
+		case 3: return 2;           // SHORT
+		case 4: return 4;           // LONG
+		case 12: return 8;          // DOUBLE
+		}
+		return -1;
+	}
+
+	Value ReadScalar(int off, int type) const
+	{
+		switch(type) {
+		case 1:  return (int)p[off];
+		case 2:  return (int)p[off];
+		case 3:  return (int)W16(off);
+		case 4:  return (int)W32(off);
+		case 12: return W64(off);
+		}
+		return Value();
+	}
+
+public:
+	Vector<Array<WicIFDTag>> ifds;   // one tag list per TIFF page/IFD
+
+	bool Parse(const String& data)
+	{
+		ifds.Clear();
+		p = (const byte *)~data;
+		len = data.GetCount();
+		if(len < 8)
+			return false;
+		if(p[0] == 'I' && p[1] == 'I')
+			le = true;
+		else if(p[0] == 'M' && p[1] == 'M')
+			le = false;
+		else
+			return false;
+		if(W16(2) != 42)
+			return false;
+		int off = (int)W32(4);
+		int guard = 0;
+		while(off && off + 2 <= len && guard++ < 256) {
+			int n = W16(off);
+			int eend = off + 2 + n * 12 + 4;
+			if(eend > len)
+				break;
+			Array<WicIFDTag> ifd;
+			for(int i = 0; i < n; i++) {
+				int e = off + 2 + i * 12;
+				WicIFDTag t;
+				t.tag   = W16(e);
+				t.type  = W16(e + 2);
+				t.count = W32(e + 4);
+				int ts = TypeSize(t.type);
+				if(ts < 1)
+					continue;
+				int64 total = (int64)t.count * ts;
+				if(total < 1 || total > (1 << 20))
+					continue;
+				int voff = total <= 4 ? e + 8 : (int)W32(e + 8);
+				if(voff < 0 || voff + total > len)
+					continue;
+				if(t.type == 2) { // ASCII: single string
+					String s((const char *)p + voff, (int)t.count);
+					int z = s.Find('\0');
+					if(z >= 0)
+						s.Trim(z);
+					t.value = s;
+				}
+				else if(t.count == 1) {
+					t.value = ReadScalar(voff, t.type);
+				}
+				else {
+					ValueArray va;
+					for(dword i2 = 0; i2 < t.count; i2++)
+						va.Add(ReadScalar(voff + int(i2) * ts, t.type));
+					t.value = Value(va);
+				}
+				ifd.Add(t);
+			}
+			ifds.Add(pick(ifd));
+			off = (int)W32(off + 2 + n * 12);
+		}
+		return ifds.GetCount() > 0;
+	}
+
+	const WicIFDTag *Find(int ifdi, int tag) const
+	{
+		if(ifdi < 0 || ifdi >= ifds.GetCount())
+			return NULL;
+		for(const WicIFDTag& t : ifds[ifdi])
+			if(t.tag == tag)
+				return &t;
+		return NULL;
+	}
+};
+
+// GeoTIFF tag numbers (unregistered private IFD tags).
+static const word WIC_TIF_ModelPixelScale   = 33550;
+static const word WIC_TIF_IntergraphMatrix  = 33920;
+static const word WIC_TIF_ModelTiepoint      = 33922;
+static const word WIC_TIF_ModelTransform     = 34264;
+static const word WIC_TIF_GeoKeyDirectory    = 34735;
+static const word WIC_TIF_GeoDoubleParams   = 34736;
+static const word WIC_TIF_GeoAsciiParams    = 34737;
+static const word WIC_TIF_GDALMetadata      = 42112;
+static const word WIC_TIF_GDALNoData        = 42113;
+static const word WIC_TIF_RPCCoefficient    = 50844;
+
+// GeoTIFF geokey directory entry constants (same numbering as plugin/tif).
+static const int  WIC_GK_RasterTypeGeoKey    = 1025;
+static const int  WIC_GK_GeographicTypeGeoKey = 2048;
+static const int  WIC_GK_ProjectedCSTypeGeoKey = 3072;
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 // WICRaster::Data - multi-frame WIC decoder; serves the active page's rows
 // as 32bppBGRA (= U++ RGBA layout on Windows).
 
@@ -331,7 +494,7 @@ public:
 	                             // stream - it must outlive dec (paging)
 	HGLOBAL            hg;      // backing store of pis, freed with it
 
-	Data() { dec = NULL; pis = NULL; hg = NULL; page_count = 0; page_index = 0; alpha = false; }
+	Data() { dec = NULL; pis = NULL; hg = NULL; page_count = 0; page_index = 0; alpha = false; md_loaded = false; ifd_parsed = false; }
 	int                page_count;
 	int                page_index;
 	Array<PageInfo>    pages;
@@ -342,7 +505,20 @@ public:
 
 	bool Create(Stream& stream);
 	bool DecodeFrame(int page);
+	
+	bool WicGeoLookup(const String& id, Value& out) const;
+	bool WicRawTagLookup(const String& id, Value& out) const;
 
+	VectorMap<String, Value> md;      // cached per-page metadata
+	bool                     md_loaded;
+	bool                     ifd_parsed;
+	WicIFDParser             ifd;      // parsed TIFF IFD chain (empty for non-TIFF)
+	String                   raw;      // TIFF: whole-file bytes, for our own IFD parser
+
+	Value QueryMeta(const String& fullpath);   // direct WIC query, used for
+	                                           // tags the enumerator can't list
+	bool LoadFrameMeta(int page);     // fills 'md' from the frame query reader
+	
 	~Data()
 	{
 		if(dec)
@@ -411,6 +587,12 @@ bool WICRaster::Data::Create(Stream& stream)
 		    IsEqualGUID(container, GUID_ContainerFormatTiff) ||
 		    IsEqualGUID(container, GUID_ContainerFormatBmp) ||
 		    IsEqualGUID(container, GUID_ContainerFormatGif))) {
+		        
+	        if(IsEqualGUID(container, GUID_ContainerFormatTiff)) {
+				raw = data;   // keep the bytes for our own IFD parser (metadata)
+				ifd_parsed = ifd.Parse(raw);
+			}
+	        
 			UINT fc = 0;
 			HRESULT ghr = dec->GetFrameCount(&fc);
 			if(FAILED(ghr))
@@ -626,8 +808,286 @@ bool WICRaster::Data::DecodeFrame(int page)
 	return ok;
 }
 
+// PROPVARIANT -> U++ Value conversion shared by the metadata readers.
+static Value sPropToValue(const PROPVARIANT& v)
+{
+	switch(v.vt) {
+	case VT_I1:  return (int)v.iVal;
+	case VT_I2:  return (int)v.iVal;
+	case VT_UI1: case VT_UI2: return (int)v.uiVal;
+	case VT_I4:  return (int)v.lVal;
+	case VT_UI4: return (int)v.ulVal;
+	case VT_R4:  return (double)v.fltVal;
+	case VT_R8:  return (double)v.dblVal;
+	case VT_BOOL: return v.boolVal ? 1 : 0;
+	case VT_LPSTR:  return String(v.pszVal);
+	case VT_LPWSTR: return WString(v.pwszVal).ToString();
+	case VT_VECTOR | VT_I1:
+	case VT_VECTOR | VT_UI1:
+	case VT_VECTOR | VT_I2:
+	case VT_VECTOR | VT_UI2:
+	case VT_VECTOR | VT_I4:
+	case VT_VECTOR | VT_UI4:
+	case VT_VECTOR | VT_R4:
+	case VT_VECTOR | VT_R8:
+	case VT_VECTOR | VT_LPSTR:
+	case VT_VECTOR | VT_LPWSTR: break;
+	default: return Value();
+	}
+	// Vector payloads (union field name follows the element type):
+	Vector<Value> va;
+	ULONG n = v.cadbl.cElems;   // cElems layout is identical for all CA* unions
+	switch(v.vt & ~VT_VECTOR) {
+	case VT_I1:  for(ULONG i = 0; i < n; i++) va.Add((int)v.cai.pElems[i]); break;
+	case VT_UI1: for(ULONG i = 0; i < n; i++) va.Add((int)v.caub.pElems[i]); break;
+	case VT_I2:  for(ULONG i = 0; i < n; i++) va.Add((int)v.cai.pElems[i]); break;
+	case VT_UI2: for(ULONG i = 0; i < n; i++) va.Add((int)v.caui.pElems[i]); break;
+	case VT_I4:  for(ULONG i = 0; i < n; i++) va.Add((int)v.cal.pElems[i]); break;
+	case VT_UI4: for(ULONG i = 0; i < n; i++) va.Add((int)v.caul.pElems[i]); break;
+	case VT_R4:  for(ULONG i = 0; i < n; i++) va.Add((double)v.caflt.pElems[i]); break;
+	case VT_R8:  for(ULONG i = 0; i < n; i++) va.Add(v.cadbl.pElems[i]); break;
+	case VT_LPSTR:  for(ULONG i = 0; i < n; i++) va.Add(String(v.calpstr.pElems[i])); break;
+	case VT_LPWSTR: for(ULONG i = 0; i < n; i++) va.Add(WString(v.calpwstr.pElems[i]).ToString()); break;
+	}
+	return Value(va);
+}
+
+// Acquire a metadata query reader; frame-level first, container-level as
+// fallback (the WIC TIFF handler keeps the IFD chain at container scope,
+// while GIF/EXIF live at frame scope).
+static IWICMetadataQueryReader *sQueryReader(IWICBitmapDecoder *dec,
+                                             IWICBitmapFrameDecode *frame, int page)
+{
+	IWICMetadataQueryReader *q = NULL;
+	if(frame && SUCCEEDED(frame->GetMetadataQueryReader(&q)))
+		return q;
+	if(dec && page >= 0 && SUCCEEDED(dec->GetMetadataQueryReader(&q)))
+		return q;
+	return NULL;
+}
+
+bool WICRaster::Data::LoadFrameMeta(int page)
+{
+	md.Clear();
+	if(!dec || page < 0 || page >= page_count)
+		return false;
+	IWICBitmapFrameDecode *frame = NULL;
+	if(FAILED(dec->GetFrame(page, &frame)))
+		return false;
+	IWICMetadataQueryReader *q = sQueryReader(dec, frame, page);
+	frame->Release();
+	if(!q)
+		return false;
+	IEnumString *paths = NULL;
+	if(SUCCEEDED(q->GetEnumerator(&paths))) {
+		LPOLESTR p = NULL;
+		while(paths->Next(1, &p, NULL) == S_OK) {
+			String path = WString(p).ToString();
+			CoTaskMemFree(p);
+			String full = path;
+			if(!full.StartsWith("/"))
+				full = "/" + full;
+			PROPVARIANT v;
+			PropVariantInit(&v);
+			if(SUCCEEDED(q->GetMetadataByName((LPCWSTR)~full.ToWString(), &v))) {
+				Value val = sPropToValue(v);
+				PropVariantClear(&v);
+				String key = path;
+				if(key.StartsWith("ifd/"))
+					key = key.Mid(4);
+				md.GetAdd(key) = val;
+			}
+			else
+				PropVariantClear(&v);
+		}
+		paths->Release();
+	}
+	q->Release();
+	return md.GetCount() > 0;
+}
+
+Value WICRaster::Data::QueryMeta(const String& fullpath)
+{
+	if(!dec || page_index < 0 || page_index >= page_count)
+		return Value();
+	IWICBitmapFrameDecode *frame = NULL;
+	if(FAILED(dec->GetFrame(page_index, &frame)))
+		return Value();
+	IWICMetadataQueryReader *q = sQueryReader(dec, frame, page_index);
+	frame->Release();
+	if(!q) {
+		sWICDiag() << "qm_noreader; ";
+		return Value();
+	}
+	// Path variants: verbatim, no leading slash, and root-relative form
+	// (drop an "ifd/" segment) - covers every layout dialect we have seen.
+	Vector<String> cand;
+	cand.Add(fullpath);
+	if(fullpath.StartsWith("/"))
+		cand.Add(fullpath.Mid(1));
+	int fi = fullpath.Find("ifd/");
+	if(fi >= 0) {
+		String tail = fullpath.Mid(fi + 4);
+		cand.Add("/" + tail);
+		cand.Add(tail);
+	}
+	// Reader levels: try frame-level via sQueryReader (which itself already
+	// falls back to container), then force container-only as the last shot.
+	IWICMetadataQueryReader *qc = NULL;
+	if(dec)
+		dec->GetMetadataQueryReader(&qc);
+	for(int pass = 0; pass < 2; pass++) {
+		IWICMetadataQueryReader *r = pass == 0 ? q : qc;
+		if(!r)
+			continue;
+		for(const String& c : cand) {
+			PROPVARIANT v;
+			PropVariantInit(&v);
+			if(SUCCEEDED(r->GetMetadataByName((LPCWSTR)~c.ToWString(), &v))) {
+				Value val = sPropToValue(v);
+				PropVariantClear(&v);
+				q->Release();
+				if(qc)
+					qc->Release();
+				sWICDiag() << "qm_hit(" << c << "); ";
+				return val;
+			}
+			PropVariantClear(&v);
+		}
+	}
+	sWICDiag() << "qm_miss(" << fullpath << "); ";
+	q->Release();
+	if(qc)
+		qc->Release();
+	return Value();
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 // WICRaster
+
+// GeoTIFF friendly-key lookup, plugin/tif-compatible namespace: "epsg",
+// "GK<n>" (one per geokey), "geo_matrix", "nodata". Derivation follows the
+// same scheme as tifupp.cpp's TIFRaster: EPSG from geokeys 2048/3072,
+// GK<n> values resolved through GeoAsciiParams / GeoDoubleParams by the
+// key's location offset (raw offset semantics, matching plugin/tif).
+bool WICRaster::Data::WicGeoLookup(const String& id, Value& out) const
+{
+	if(!ifd_parsed)
+		return false;
+	int pi = page_index < ifd.ifds.GetCount() ? page_index : 0;
+	const WicIFDTag *gkd = ifd.Find(pi, WIC_TIF_GeoKeyDirectory);
+
+	if(id == "epsg") {
+		if(gkd && gkd->type == 3 && gkd->count >= 4 && (gkd->count % 4) == 0) {
+			ValueArray kv = gkd->value.Get<ValueArray>();
+			for(int i = 4; i + 3 < kv.GetCount(); i += 4) {
+				int key = (int)kv[i];
+				int loc = (int)kv[i + 1];
+				int off = (int)kv[i + 3];
+				if((key == WIC_GK_GeographicTypeGeoKey || key == WIC_GK_ProjectedCSTypeGeoKey) && loc == 0) {
+					out = off;
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	if(id == "geo_matrix") {
+		const WicIFDTag *mt = ifd.Find(pi, WIC_TIF_ModelTransform);
+		if(mt && mt->count == 16 && mt->type == 12) {
+			out = mt->value;
+			return true;
+		}
+		const WicIFDTag *tp = ifd.Find(pi, WIC_TIF_ModelTiepoint);
+		const WicIFDTag *ps = ifd.Find(pi, WIC_TIF_ModelPixelScale);
+		if(tp && ps && tp->type == 12 && ps->type == 12 && tp->count >= 6 && ps->count >= 3) {
+			ValueArray tv = tp->value.Get<ValueArray>();
+			ValueArray sv = ps->value.Get<ValueArray>();
+			double sx = (double)sv[0], sy = (double)sv[1], sz = (double)sv[2];
+			ValueArray m;
+			m.Add(sx);  m.Add(0.0); m.Add(0.0); m.Add((double)tv[3] - (double)tv[0] * sx);
+			m.Add(0.0); m.Add(sy);  m.Add(0.0); m.Add((double)tv[4] - (double)tv[1] * sy);
+			m.Add(0.0); m.Add(0.0); m.Add(sz);  m.Add((double)tv[5] - (double)tv[2] * sz);
+			m.Add(0.0); m.Add(0.0); m.Add(0.0); m.Add(1.0);
+			out = Value(m);
+			return true;
+		}
+		return false;
+	}
+
+	if(id == "nodata") {
+		const WicIFDTag *nd = ifd.Find(pi, WIC_TIF_GDALNoData);
+		if(nd && nd->type == 2) {
+			out = nd->value;
+			return true;
+		}
+		return false;
+	}
+
+	if(id.StartsWith("GK") && gkd && gkd->type == 3 && gkd->count >= 4 && (gkd->count % 4) == 0) {
+		int want = ScanInt(id.Mid(2));
+		if(want > 0) {
+			ValueArray kv = gkd->value.Get<ValueArray>();
+			const WicIFDTag *gd = ifd.Find(pi, WIC_TIF_GeoDoubleParams);
+			const WicIFDTag *ga = ifd.Find(pi, WIC_TIF_GeoAsciiParams);
+			for(int i = 4; i + 3 < kv.GetCount(); i += 4) {
+				if((int)kv[i] != want)
+					continue;
+				int loc = (int)kv[i + 1];
+				int cnt = (int)kv[i + 2];
+				int off = (int)kv[i + 3];
+				if(loc == 0) {                      // inline SHORT value
+					out = off;
+					return true;
+				}
+				if(ga && ga->type == 2) {           // offset into GeoAsciiParams
+					String ascii = ga->value;
+					if(off >= 0 && off + cnt <= ascii.GetCount()) {
+						out = ascii.Mid(off, cnt);
+						return true;
+					}
+					return false;
+				}
+				if(gd && gd->type == 12) {          // index into GeoDoubleParams
+					ValueArray dv = gd->value.Get<ValueArray>();
+					if(off < dv.GetCount()) {
+						out = dv[off];
+						return true;
+					}
+					return false;
+				}
+				return false;
+			}
+		}
+		return false;
+	}
+	return false;
+}
+
+// Raw tag access by number: GetMetaData("33550"), GetMetaData("tiff:33550")
+// or the legacy WIC-query form GetMetaData("{ushort=33550}").
+bool WICRaster::Data::WicRawTagLookup(const String& id, Value& out) const
+{
+	if(!ifd_parsed)
+		return false;
+	int tagnum = -1;
+	if(IsDigit(*id))
+		tagnum = ScanInt(id);
+	else if(id.StartsWith("tiff:"))
+		tagnum = ScanInt(id.Mid(5));
+	else if(id.StartsWith("{ushort="))
+		tagnum = ScanInt(id.Mid(8));
+	if(tagnum <= 0)
+		return false;
+	int pi = page_index < ifd.ifds.GetCount() ? page_index : 0;
+	for(const WicIFDTag& t : ifd.ifds[pi])
+		if(t.tag == tagnum) {
+			out = t.value;
+			return true;
+		}
+	return false;
+}
 
 WICRaster::WICRaster()
 {
@@ -714,6 +1174,82 @@ int WICRaster::GetPageDisposal(int n)
 	if(!data || n < 0 || n >= data->pages.GetCount())
 		return 0;
 	return data->pages[n].disposal;
+}
+
+Value WICRaster::GetMetaData(String id)
+{
+	if(!data)
+		return Value();
+	// Enumeration may legitimately yield nothing (WIC enumerates metadata
+	// blocks, and a plain TIFF IFD has none) - that is NOT a failure and
+	// must not block the direct-query fallback below. Only try loading
+	// once per page (md stays empty; QueryMeta works from the readers).
+	if(data->md.IsEmpty() && !data->md_loaded) {
+		data->md_loaded = true;
+		data->LoadFrameMeta(data->page_index);
+	}
+	// Exact match first ("{ushort=33550}" style, as EnumMetaData reports):
+	int f = data->md.Find(id);
+	if(f >= 0)
+		return data->md[f];
+	// Direct query fallback: WIC's TIFF enumerator does not list individual
+	// IFD tags (LoadFrameMeta can only harvest what enumeration yields),
+	// so arbitrary tags - e.g. GeoTIFF 33550 - must be queried by full
+	// path. Ids starting with '{' get the /ifd/ block prefix; ids starting
+	// with '/' or containing '/' are treated as explicit query paths and
+	// passed through verbatim (used by tests/probes).
+	if(*id == '{') {
+		Value v = data->QueryMeta("/ifd/" + id);
+		if(!v.IsNull())
+			return v;
+		// WIC misses TIFF IFD tags on every variant tested - fall through
+		// to our own parser, which understands the {ushort=N} form too.
+	}
+	if(id.Find('/') >= 0)
+		return data->QueryMeta(id);
+	// GeoTIFF / TIFF native-tag access: our own IFD parse (independent of
+	// WIC's query system, which does not expose these tags). Plugin/tif-
+	// compatible friendly keys ("epsg", "GK<n>", "geo_matrix", "nodata")
+	// plus raw tag ids ("33550", "tiff:33550", legacy "{ushort=33550}").
+	{
+		Value v;
+		if(data->WicGeoLookup(id, v))
+			return v;
+		if(data->WicRawTagLookup(id, v))
+			return v;
+	}
+	return Value();
+}
+
+void WICRaster::EnumMetaData(Vector<String>& id_list)
+{
+	id_list.Clear();
+	if(!data)
+		return;
+	if(data->md.IsEmpty() && !data->md_loaded) {
+		data->md_loaded = true;
+		data->LoadFrameMeta(data->page_index);
+	}
+	for(int i = 0; i < data->md.GetCount(); i++)
+		id_list.Add(data->md.GetKey(i));
+	// TIFF: surface the tags our own IFD parser found (WIC enumeration
+	// never lists them). Friendly geo keys first, then raw tag numbers.
+	if(data->ifd_parsed && data->page_index < data->ifd.ifds.GetCount()) {
+		static const char *friendly[] = { "epsg", "geo_matrix", "nodata" };
+		for(const char *fk : friendly) {
+			Value v;
+			if(data->WicGeoLookup(fk, v))
+				id_list.Add(fk);
+		}
+		const WicIFDTag *gkd = data->ifd.Find(data->page_index, WIC_TIF_GeoKeyDirectory);
+		if(gkd && gkd->type == 3 && gkd->count >= 4 && (gkd->count % 4) == 0) {
+			ValueArray kv = gkd->value.Get<ValueArray>();
+			for(int i = 4; i + 3 < kv.GetCount(); i += 4)
+				id_list.Add("GK" + AsString((int)kv[i]));
+		}
+		for(const WicIFDTag& t : data->ifd.ifds[data->page_index])
+			id_list.Add("tiff:" + AsString((int)t.tag));
+	}
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
