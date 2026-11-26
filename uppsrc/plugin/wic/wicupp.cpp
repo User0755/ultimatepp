@@ -371,7 +371,7 @@ public:
 	                             // stream - it must outlive dec (paging)
 	HGLOBAL            hg;      // backing store of pis, freed with it
 
-	Data() { dec = NULL; pis = NULL; hg = NULL; page_count = 0; page_index = 0; alpha = false; md_loaded = false; ifd_parsed = false; }
+	Data() { dec = NULL; pis = NULL; hg = NULL; page_count = 0; page_index = 0; alpha = false; md_loaded = false; ifd_parsed = false; Zero(cont); }
 	int                page_count;
 	int                page_index;
 	Array<PageInfo>    pages;
@@ -384,6 +384,7 @@ public:
 	bool DecodeFrame(int page);
 	
 	bool WicGeoLookup(const String& id, Value& out) const;
+	bool WicPageKeyLookup(const String& id, Value& out) const;
 	bool WicRawTagLookup(const String& id, Value& out) const;
 
 	VectorMap<String, Value> md;      // cached per-page metadata
@@ -391,6 +392,8 @@ public:
 	bool                     ifd_parsed;
 	WicIFDParser             ifd;      // parsed TIFF IFD chain (empty for non-TIFF)
 	String                   raw;      // TIFF: whole-file bytes, for our own IFD parser
+	GUID                     cont;     // container format (JPEG "orientation" key)
+	Vector<RGBA>             pal;      // palette of the active page (indexed sources)
 
 	Value QueryMeta(const String& fullpath);   // direct WIC query, used for
 	                                           // tags the enumerator can't list
@@ -458,6 +461,8 @@ bool WICRaster::Data::Create(Stream& stream)
 		HRESULT chr = dec->GetContainerFormat(&container);
 		if(FAILED(chr))
 			WICTRACE("containerformat", chr);
+		if(SUCCEEDED(chr))
+			cont = container;   // remembered for format-specific friendly keys
 		if(SUCCEEDED(chr) &&
 		   (IsEqualGUID(container, GUID_ContainerFormatPng) ||
 		    IsEqualGUID(container, GUID_ContainerFormatJpeg) ||
@@ -502,7 +507,10 @@ bool WICRaster::Data::Create(Stream& stream)
 						IWICMetadataQueryReader *q = NULL;
 						HRESULT qhr = frame->GetMetadataQueryReader(&q);
 						if(FAILED(qhr))
-							WICTRACE("metareader", qhr);
+							// No metadata blocks in this frame (common for
+							// WIC-encoded single-frame files) - safe defaults
+							// apply. Not an error.
+							WICINFO(String() << "metareader=0x" << FormatIntHex((dword)((int)qhr & 0xffffffff)) << "; ");
 						if(SUCCEEDED(qhr)) {
 							// GIF frames are subimages placed at Left/Top with
 							// per-frame timing in the graphic control extension.
@@ -547,6 +555,7 @@ bool WICRaster::Data::Create(Stream& stream)
 
 bool WICRaster::Data::DecodeFrame(int page)
 {
+	pal.Clear();   // per-page: only indexed pages populate it below
 	WICGuard& w = WIC();
 	if(!w.factory || !dec || page < 0 || page >= page_count)
 		return false;
@@ -616,12 +625,25 @@ bool WICRaster::Data::DecodeFrame(int page)
 							for(int x = 0; x < size.cx; x++) {
 								int shift = 8 - bpp - ((x * bpp) & 7);
 								int idx = (srow[(x * bpp) >> 3] >> shift) & mask;
-								dword c = idx < (int)got ? cols[idx] : 0xFF000000;
+								int npal = min<int>((int)got, (int)nc);   // hostile codec may over-report GetColors
+								dword c = idx < npal ? cols[idx] : 0xFF000000;
 								drow[x].r = byte((c >> 16) & 0xFF);
 								drow[x].g = byte((c >> 8) & 0xFF);
 								drow[x].b = byte(c & 0xFF);
 								drow[x].a = byte((c >> 24) & 0xFF);
 							}
+						}
+						// Remember the palette: GetPalette()/GetPaletteCount()
+						// mirror what plugin/png and plugin/gif expose for
+						// indexed sources. WICColor is COLORREF-layout
+						// 0xAABBGGRR = {b,g,r,a} bytes.
+						pal.SetCount(min<int>((int)got, (int)nc));   // clamp: hostile codec may over-report
+						for(int ci = 0; ci < min<int>((int)got, (int)nc); ci++) {
+							dword wc = cols[ci];
+							pal[ci].b = byte(wc & 0xFF);
+							pal[ci].g = byte((wc >> 8) & 0xFF);
+							pal[ci].r = byte((wc >> 16) & 0xFF);
+							pal[ci].a = byte((wc >> 24) & 0xFF);
 						}
 					}
 				}
@@ -871,26 +893,90 @@ bool WICRaster::Data::WicGeoLookup(const String& id, Value& out) const
 	}
 
 	if(id == "geo_matrix") {
+		// 6-element affine [x0,xx,xy,y0,yx,yy], exactly like plugin/tif:
+		// orientation-normalized (tag 274), half-pixel-corrected when the
+		// raster type geokey says RasterPixelIsPoint (1025 = 2), derived
+		// from ModelTransformation (preferred) or TiePoint+PixelScale.
 		const WicIFDTag *mt = ifd.Find(pi, WIC_TIF_ModelTransform);
-		if(mt && mt->count == 16 && mt->type == 12) {
-			out = mt->value;
-			return true;
-		}
 		const WicIFDTag *tp = ifd.Find(pi, WIC_TIF_ModelTiepoint);
 		const WicIFDTag *ps = ifd.Find(pi, WIC_TIF_ModelPixelScale);
-		if(tp && ps && tp->type == 12 && ps->type == 12 && tp->count >= 6 && ps->count >= 3) {
+		if(!mt && !(tp && ps))
+			return false;
+		if((mt && !(mt->type == 12 && mt->count == 16)) ||
+		   (tp && ps && !(tp->type == 12 && ps->type == 12 && tp->count >= 6 && ps->count >= 3)))
+			return false;
+
+		// Orientation (tag 274, default 1) and pixel-is-area (default true,
+		// only DEM/DTM style files usually carry RasterPixelIsPoint).
+		const WicIFDTag *ort = ifd.Find(pi, 274);
+		int orientation = 1;
+		if(ort && ort->count == 1)
+			orientation = (int)ort->value;
+		bool pixel_is_area = true;
+		if(gkd && gkd->type == 3 && gkd->count >= 4 && (gkd->count % 4) == 0) {
+			ValueArray kv = gkd->value.Get<ValueArray>();
+			for(int i = 4; i + 3 < kv.GetCount(); i += 4)
+				if((int)kv[i] == 1025) {   // GTRasterTypeGeoKey
+					pixel_is_area = (int)kv[i + 3] == 1;   // RasterPixelIsArea
+					break;
+				}
+		}
+
+		double gm[6] = { 0, 1, 0, 0, 0, 1 };
+		if(mt) {
+			// ModelTransformation is a 4x4 stored row-major; the 2D part
+			// lives in elements [0],[1],[4],[5] with translations [3],[7]
+			// (tif reads the same layout as data[3],data[0],data[1]...).
+			ValueArray mv = mt->value.Get<ValueArray>();
+			gm[0] = (double)mv[3];
+			gm[1] = (double)mv[0];
+			gm[2] = (double)mv[1];
+			gm[3] = (double)mv[7];
+			gm[4] = (double)mv[4];
+			gm[5] = (double)mv[5];
+		}
+		else {
 			ValueArray tv = tp->value.Get<ValueArray>();
 			ValueArray sv = ps->value.Get<ValueArray>();
-			double sx = (double)sv[0], sy = (double)sv[1], sz = (double)sv[2];
-			ValueArray m;
-			m.Add(sx);  m.Add(0.0); m.Add(0.0); m.Add((double)tv[3] - (double)tv[0] * sx);
-			m.Add(0.0); m.Add(sy);  m.Add(0.0); m.Add((double)tv[4] - (double)tv[1] * sy);
-			m.Add(0.0); m.Add(0.0); m.Add(sz);  m.Add((double)tv[5] - (double)tv[2] * sz);
-			m.Add(0.0); m.Add(0.0); m.Add(0.0); m.Add(1.0);
-			out = Value(m);
-			return true;
+			double dx = (double)sv[0];
+			double dy = -abs((double)sv[1]);
+			gm[0] = (double)tv[3] - (double)tv[0] * dx;
+			gm[1] = dx;
+			gm[2] = 0;
+			gm[3] = (double)tv[4] - (double)tv[1] * dy;
+			gm[4] = 0;
+			gm[5] = dy;
 		}
-		return false;
+
+		// Half-pixel correction for RasterPixelIsPoint (mirrors tif).
+		if(!pixel_is_area) {
+			gm[0] -= gm[1] * 0.5 + gm[2] * 0.5;
+			gm[3] -= gm[4] * 0.5 + gm[5] * 0.5;
+		}
+		// Orientation normalization: >=5 swaps the axes first...
+		if(orientation >= 5) {
+			Swap(gm[1], gm[2]);
+			Swap(gm[4], gm[5]);
+		}
+		// ...then mirror/rotate like tif's AdjustMatrixOrientation.
+		switch(orientation) {
+		case 2: gm[0] += gm[1] * size.cx; gm[3] += gm[4] * size.cx; gm[1] = -gm[1]; gm[4] = -gm[4]; break;
+		case 3: gm[0] += gm[1] * size.cx + gm[2] * size.cy; gm[3] += gm[4] * size.cx + gm[5] * size.cy;
+		        gm[1] = -gm[1]; gm[4] = -gm[4]; gm[2] = -gm[2]; gm[5] = -gm[5]; break;
+		case 4: gm[0] += gm[2] * size.cy; gm[3] += gm[5] * size.cy; gm[2] = -gm[2]; gm[5] = -gm[5]; break;
+		case 6: gm[0] += gm[1] * size.cy; gm[3] += gm[4] * size.cy;
+		        gm[1] = -gm[1]; gm[4] = -gm[4]; break;
+		case 7: gm[0] += gm[1] * size.cy + gm[2] * size.cx; gm[3] += gm[4] * size.cy + gm[5] * size.cx;
+		        gm[1] = -gm[1]; gm[4] = -gm[4]; gm[2] = -gm[2]; gm[5] = -gm[5]; break;
+		case 8: gm[0] += gm[2] * size.cx; gm[3] += gm[5] * size.cx;
+		        gm[2] = -gm[2]; gm[5] = -gm[5]; break;
+		}
+
+		ValueArray m;
+		for(int i = 0; i < 6; i++)
+			m.Add(gm[i]);
+		out = Value(m);
+		return true;
 	}
 
 	if(id == "nodata") {
@@ -938,6 +1024,87 @@ bool WICRaster::Data::WicGeoLookup(const String& id, Value& out) const
 			}
 		}
 		return false;
+	}
+	return false;
+}
+
+// Per-page friendly keys, matching the keys TIFRaster::Data sets on each
+// SeekPage (plugin/tif/tifupp.cpp): BITSPERSAMPLE, SAMPLESPERPIXEL,
+// PHOTOMETRIC, tiff_orientation. TIFF values come from our own IFD parser
+// (tags 258, 277, 262, 274); JPEG orientation comes from the container's
+// EXIF block via the WIC query system (tag 274 at /app1/ifd).
+bool WICRaster::Data::WicPageKeyLookup(const String& id, Value& out) const
+{
+	if(IsEqualGUID(cont, GUID_ContainerFormatTiff) && ifd_parsed) {
+		int pi = page_index < ifd.ifds.GetCount() ? page_index : 0;
+		// TIFF defaults are applied for omitted tags, so consumers do not
+		// need to know them: BitsPerSample=1, Photometric=1 (BlackIsZero),
+		// SamplesPerPixel=1, Orientation=1 (TIFF6 spec).
+		if(id == "BITSPERSAMPLE") {
+			const WicIFDTag *t = ifd.Find(pi, 258);
+			if(t && t->count >= 1) {
+				if(t->count == 1) out = t->value;
+				else {
+					ValueArray va = t->value.Get<ValueArray>();
+					if(va.GetCount()) out = va[0];
+				}
+				return true;
+			}
+			out = 1;   // TIFF default
+			return true;
+		}
+		else if(id == "SAMPLESPERPIXEL") {
+			const WicIFDTag *t = ifd.Find(pi, 277);
+			if(t && t->count == 1) { out = t->value; return true; }
+			out = 1;   // TIFF default
+			return true;
+		}
+		else if(id == "PHOTOMETRIC") {
+			const WicIFDTag *t = ifd.Find(pi, 262);
+			if(t && t->count == 1) { out = t->value; return true; }
+			out = 1;   // TIFF default (BlackIsZero)
+			return true;
+		}
+		else if(id == "tiff_orientation") {
+			const WicIFDTag *t = ifd.Find(pi, 274);
+			if(t && t->count == 1) { out = t->value; return true; }
+			out = 1;   // TIFF default (top-left)
+			return true;
+		}
+	}
+	else if(IsEqualGUID(cont, GUID_ContainerFormatJpeg)) {
+		if(id == "orientation") {
+			// EXIF orientation, tag 274. WIC keeps EXIF in /app1/ifd;
+			// short tags usually surface directly. Miss is normal for
+			// JPEGs without EXIF - not an error.
+			IWICBitmapDecoder *d = dec;
+			if(!d) return false;
+			IWICBitmapFrameDecode *frame = NULL;
+			if(FAILED(d->GetFrame(page_index, &frame)))
+				return false;
+			IWICMetadataQueryReader *q = sQueryReader(d, frame, page_index);
+			frame->Release();
+			if(!q) return false;
+			static const wchar_t *paths[] = {
+				L"/app1/ifd/{ushort=274}", L"app1/ifd/{ushort=274}",
+				L"{ushort=274}", L"/app1/ifd/exif/{ushort=274}",
+			};
+			for(const wchar_t *path : paths) {
+				PROPVARIANT v;
+				PropVariantInit(&v);
+				if(SUCCEEDED(q->GetMetadataByName(path, &v))) {
+					Value val = sPropToValue(v);
+					PropVariantClear(&v);
+					q->Release();
+					if(!val.Is<int>() && !val.Is<double>())
+						return false;
+					out = val;
+					return true;
+				}
+				PropVariantClear(&v);
+			}
+			q->Release();
+		}
 	}
 	return false;
 }
@@ -1003,12 +1170,12 @@ Raster::Line WICRaster::GetLine(int line)
 
 int WICRaster::GetPaletteCount()
 {
-	return 0;
+	return data ? data->pal.GetCount() : 0;
 }
 
 const RGBA *WICRaster::GetPalette()
 {
-	return NULL;
+	return data && data->pal.GetCount() ? &(*data->pal.begin()) : NULL;
 }
 
 const RasterFormat *WICRaster::GetFormat()
@@ -1028,8 +1195,11 @@ int WICRaster::GetActivePage() const
 
 void WICRaster::SeekPage(int page)
 {
-	if(data)
+	if(data) {
+		data->md.Clear();       // per-page metadata: refetch on demand
+		data->md_loaded = false;
 		data->DecodeFrame(page);
+	}
 }
 
 int WICRaster::GetPageDelay(int n)
@@ -1092,6 +1262,8 @@ Value WICRaster::GetMetaData(String id)
 		Value v;
 		if(data->WicGeoLookup(id, v))
 			return v;
+		if(data->WicPageKeyLookup(id, v))
+			return v;
 		if(data->WicRawTagLookup(id, v))
 			return v;
 	}
@@ -1117,6 +1289,14 @@ void WICRaster::EnumMetaData(Vector<String>& id_list)
 			Value v;
 			if(data->WicGeoLookup(fk, v))
 				id_list.Add(fk);
+		}
+		// Per-page keys (tif parity): listed when the underlying tag exists.
+		static const char *pagekeys[] = { "BITSPERSAMPLE", "SAMPLESPERPIXEL",
+		                                  "PHOTOMETRIC", "tiff_orientation" };
+		for(const char *pk : pagekeys) {
+			Value v;
+			if(data->WicPageKeyLookup(pk, v))
+				id_list.Add(pk);
 		}
 		const WicIFDTag *gkd = data->ifd.Find(data->page_index, WIC_TIF_GeoKeyDirectory);
 		if(gkd && gkd->type == 3 && gkd->count >= 4 && (gkd->count % 4) == 0) {
