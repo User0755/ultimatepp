@@ -1,5 +1,8 @@
 description "Windows Imaging Component (WIC) raster support\3770,128,128";
 
+acceptflags
+	WICDIAG_VERBOSE;
+
 uses
 	Draw;
 
