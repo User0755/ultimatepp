@@ -782,6 +782,14 @@ Ide::Ide()
 	ai_output.WhenLink = [this](const String& link) {
 		AILink(link);
 	};
+	ai_prompt << ai_animation.TopPos(0, DPI(30)).RightPos(0, DPI(30));
+	ai_prompt << ai_cancel.BottomPos(0, Zy(20)).RightPos(0, Zx(30));
+	ai_cancel << [this] {
+		ai_stop = true;
+	};
+	ai_cancel.SetLabel("Stop!");
+	ai_cancel.Hide();
+	ai_animation.Hide();
 }
 
 Ide::~Ide()

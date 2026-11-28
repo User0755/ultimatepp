@@ -12,389 +12,91 @@ bool DocEditEnter::Key(dword key, int count)
 	return DocEdit::Key(findarg(key, K_CTRL|K_ENTER, K_ALT|K_ENTER, K_SHIFT|K_ENTER) >= 0 ? K_ENTER : key, count);
 }
 
-Ide::AIThread Ide::AIChatGPT(const String& instructions, const String& code, const String& prev_id)
+void Ide::AI_Start(const String& instructions, const String& prompt, const String& prev_id)
 {
-	Ide::AIThread r;
-#ifdef _DEBUG
-//	HttpRequest::Trace();
-#endif
-
-	HttpRequest http("https://api.openai.com/v1/responses");
-
-	http.Header("Authorization", "Bearer " + ai_key);
+	ai_http.NewRequest();
+	ai_http.Url("https://api.openai.com/v1/responses")
+	       .Header("Authorization", "Bearer " + ai_key)
+	       .Timeout(0);
 
 	Upp::Json request;
 	request("model", ai_model)
 	       ("prompt_cache_key", "experimental_query")
 	       ("instructions", instructions)
-	       ("input", code)
+	       ("input", prompt)
 	       ("max_output_tokens", 100000)
 	       ("background", true);
 
 	if(prev_id.GetCount())
 		request("previous_response_id", prev_id);
-
-	String responseText = http.ContentType("application/json").Post(request).Execute();
-		
-	Progress pi("AI thinking...");
-
-	http.WhenWait = [&] {
-		if(pi.StepCanceled())
-			http.Abort();
-	};
-
-	if(http.IsError()) {
-		r.error << "HTTP request failed: " << http.GetErrorDesc();
-		return r;
-	}
-
-	Value responseJson = ParseJSON(responseText);
-
-	String responseId = AsString(responseJson["id"]);
-	String status = AsString(responseJson["status"]);
-
-	int ms = msecs();
-	while(findarg(status, "queued", "in_progress") >= 0) {
-		if(pi.StepCanceled()) {
-			r.error = "Canceled by user";
-			return r;
-		}
-		
-		Sleep(0);
 	
-		int ms1 = msecs();
-		if(ms1 - ms > 1000) {
-			ms = ms1;
-			HttpRequest poll("https://api.openai.com/v1/responses/" + responseId);
-			poll.Header("Authorization", "Bearer " + ai_key);
-			poll.WhenWait = [&] {
-				if(pi.StepCanceled())
-					http.Abort();
-			};
-		
-			responseText = poll.Execute(); // GET is the default
-			if(poll.IsError()) {
-				r.error << "Polling HTTP request failed: " << poll.GetErrorDesc();
-				return r;
-			}
-		
-			responseJson = ParseJSON(responseText);
-			if(IsNull(responseJson)) {
-				r.error << "Invalid JSON response while polling: " << responseText;
-				return r;
-			}
-			
-			status = AsString(responseJson["status"]);
-		}
+	ai_http.ContentType("application/json").Post(request);
+	
+	ai_error.Clear();
+	ai_result.Clear();
+	ai_working = true;
+	
+	AI_Do();
+}
+
+bool Ide::AI_Do()
+{
+	if(ai_error.GetCount() || !ai_working)
+		return true;
+
+	if(ai_http.Do())
+		return false;
+
+	if(ai_http.IsError()) {
+		ai_working = false;
+		ai_error << "HTTP request failed: " << ai_http.GetErrorDesc();
+		return true;
 	}
 
-	LOG("Response status: " << status);
+	ai_responseText = ai_http.GetContent();
+	ai_responseJson = ParseJSON(ai_responseText);
+	ai_responseId = AsString(ai_responseJson["id"]);
+	ai_working = false;
+	String status = ~ai_responseJson["status"];
+
+	if(findarg(status, "queued", "in_progress") >= 0) {
+		ai_http.NewRequest();
+		ai_http.Url("https://api.openai.com/v1/responses/" + ai_responseId)
+		       .Header("Authorization", "Bearer " + ai_key)
+		       .Timeout(0);
+		ai_working = true;
+		return false;
+	}
 
 	if(status != "completed") {
-		r.error << "Response did not complete. Status: " << status;
-		return r;
+		ai_error << "Response did not complete. Status: " << status;
+		return true;
 	}
 
-	if(!IsNull(responseJson["error"])) {
-		r.error << "OpenAI API error: " << ~responseJson["error"]["message"];
-		return r;
+	if(!IsNull(ai_responseJson["error"])) {
+		ai_error << "OpenAI API error: " << ~ai_responseJson["error"]["message"];
+		return true;
 	}
 
-	for(Value item : responseJson["output"])
+	for(Value item : ai_responseJson["output"])
 		if(AsString(item["type"]) == "message") {
 			Value content = item["content"];
 			for(Value part : content) {
 				if(part["type"] == "output_text")
-					r.result << part["text"];
+					ai_result << part["text"];
 			}
 		}
 
-	r.response_id = AsString(responseJson["id"]);
-/*
-	if(AsString(responseJson["status"]) == "incomplete") {
-		LOG("Warning: generation was incomplete. Reason: "
-		    << AsString(responseJson["incomplete_details"]["reason"]));
-	}
-*/
-	Value usage = responseJson["usage"];
+	Value usage = ai_responseJson["usage"];
 	if(!IsNull(usage)) {
 		Value inputDetails = usage["input_tokens_details"];
-		PutVerbose(String() << "Input bytes: " << code.GetCount());
 		PutVerbose(String() << "Input tokens: " << usage["input_tokens"]);
 		PutVerbose(String() << "Cached input tokens: " << inputDetails["cached_tokens"]);
 		PutVerbose(String() << "Output tokens: " << usage["output_tokens"]);
 		PutVerbose(String() << "Total tokens: " << usage["total_tokens"]);
 	}
 	
-	return r;
-}
-
-Ide::AIThread Ide::AIGemini(const String& instructions, const String& code, const String& prev_id)
-{
-	Ide::AIThread r;
-	return r;
-#if 0
-	HttpRequest http("https://generativelanguage.googleapis.com/v1beta/models/" + ai_model + ":generateContent?key=" + ai_key);
-
-	String responseText =
-	http.ContentType("application/json").Post(
-		Upp::Json("contents", JsonArray() <<
-					Upp::Json("role", "user")
-		                     ("parts", JsonArray() << Upp::Json("text", code)
-		                                           << Upp::Json("text", instructions)))
-	).Execute();
-
-	if (http.IsError()) {
-		LLOG("HTTP Request failed: " << http.GetErrorDesc());
-		return String::GetVoid();
-	}
-
-	Value responseJson = ParseJSON(responseText);
-	
-	if (!IsNull(responseJson["error"])) {
-		LLOG("Gemini API Error: " << responseJson["error"]["message"]);
-		return String::GetVoid();
-	}
-
-	return ~responseJson["candidates"][0]["content"]["parts"][0]["text"];
-#endif
-}
-
-Ide::AIThread Ide::AI(const String& instructions, const String& code_, const String& prev_id_)
-{
-	String code = code_;
-	String prev_id = prev_id_;
-tool_restart:
-	LDUMP(code);
-	Ide::AIThread r = ai_kind == 0 ? AIChatGPT(instructions, code, prev_id)
-	                               : AIGemini(instructions, code, prev_id);
-
-	auto TimeStamp = [&](FileIn& in) {
-		
-	};
-	LDUMP(r.result);
-	int q = r.result.FindAfter("⚡GET ");
-	bool stamp = false;
-	if(q < 0) {
-		stamp = true;
-		q = r.result.FindAfter("⚡GET_TIME ");
-	}
-	if(q >= 0) {
-		String path = r.result.Mid(q);
-		for(const char *delim : { "\n", "⚡", " " }) {
-			int q = path.Find(delim);
-			if(q >= 0)
-				path.Trim(q);
-		}
-		LLOG("GET FILE " << path);
-		for(String n : GetUppDirs()) {
-			FileIn in(n + "/" + path);
-			if(in) {
-				code << "TIME: " << Time(in.GetTime()) << "\n";
-				if(!stamp) {
-					String raw;
-					int ii = 0;
-					while(!in.IsEof()) {
-						String l = in.GetLine();
-						code << ++ii << ": " << l << "\n";
-						raw << l << "\n";
-					}
-					LDUMP(path);
-					ai_file.GetAdd(path) = raw;
-					prev_id = r.response_id;
-				}
-				goto tool_restart;
-			}
-		}
-	}
-	return r;
-}
-
-struct SummaryAIDlg : WithSummaryAILayout<TopWindow> {
-	SummaryAIDlg();
-};
-
-SummaryAIDlg::SummaryAIDlg()
-{
-	CtrlLayoutOKCancel(*this, "AI summary generator");
-	
-	list.AddColumn("").With([](One<Ctrl>& ctrl) { // 0
-		ctrl.Create<Option>().NoWantFocus();
-	});
-	list.AddColumn("Package"); // 1
-	auto fmt = [](const Value& v)->Value {
-		Time t = v;
-		return IsNull(t) ? Null :
-			   Format("%02.2d-%02.2d-%02.2d %02.2d`:%02.2d`:%02.2d",
-	                  t.year, t.month, t.day, t.hour, t.minute, t.second);
-	};
-	list.AddColumn("Package date").ConvertBy(fmt); // 2
-	list.AddColumn("Package size"); // 3
-	list.AddColumn("Summary date").ConvertBy(fmt); // 4
-	list.AddColumn("Summary size"); // 5
-	list.AddIndex(); // 6
-	list.ColumnWidths("29 180 117 83 117 83");
-
-	const Workspace& wspc = GetIdeWorkspace();
-	for(int i = 0; i < wspc.GetCount(); i++) {
-		int ii = wspc.use_order[i];
-		const Package& pk = wspc.GetPackage(ii);
-		String n = wspc[ii];
-		Time ltm = Null;
-		int64 len = 0;
-		for(int i = 0; i < pk.GetCount(); i++) {
-			String path = SourcePath(n, pk.file[i]);
-			if(GetFileExt(path) != ".ai" && FileExists(path)) {
-				FindFile ff(path);
-				if(ff) {
-					ltm = max(Nvl(ltm, Time::Low()), Time(ff.GetLastWriteTime()));
-					len += ff.GetLength();
-				}
-			}
-		}
-		String spath = SourcePath(n, "summary.ai");
-		int64 l = GetFileLength(spath);
-		list.Add(false, n, ltm, AttrText(FormatFileSize(len)).Right(), FileGetTime(spath),
-		         AttrText(l >= 0 ? FormatFileSize(l) : String()).Right(),
-		         ii);
-	}
-	
-	all << [&] {
-		bool set = false;
-		for(int i = 0; i < list.GetCount(); i++)
-			if(!(bool)list.Get(i, 0))
-				set = true;
-		for(int i = 0; i < list.GetCount(); i++)
-			list.Set(i, 0, set);
-	};
-	
-	date << [this] {
-		for(int i = 0; i < list.GetCount(); i++)
-			if((Time)list.Get(i, 2) > (Time)list.Get(i, 4))
-				list.Set(i, 0, true);
-	};
-}
-
-String Ide::GetAIFileMap()
-{
-	String map;
-	for(const auto& f : ~CodeIndex()) { // do base classes first
-		String n = GetPathNest(f.key);
-		if(n.GetCount()) {
-			map << "⚡FILE " << UnixPath(f.key.Mid(n.GetCount() + 1)) << "\n";
-			String names;
-			Index<String> nests;
-			for(const AnnotationItem& m : f.value.items) {
-				nests.FindAdd(m.nest);
-				bool cpp = findarg(GetFileExt(f.key), ".c", ".cpp") >= 0;
-				if(m.name.GetCount() && !m.isstatic &&
-				   (!cpp && m.kind != CXCursor_MacroDefinition) &&
-				   findarg(m.kind, CXCursor_Constructor, CXCursor_Destructor,
-				                   CXCursor_ConversionFunction, CXCursor_CXXMethod,
-				                   CXCursor_FieldDecl, CXCursor_StructDecl, CXCursor_UnionDecl,
-				                   CXCursor_ClassDecl, CXCursor_EnumDecl) < 0 &&
-				   *m.name != '(') {
-					MergeWith(names, " ", AsString(m.kind) + m.name);
-				}
-			}
-			if(nests.GetCount())
-				map << "TYPES " << Join(nests.GetKeys(), " ") << "\n";
-			if(names.GetCount())
-				map << "NAMES " << names << "\n";
-		}
-	}
-	return map;
-}
-
-String Ide::GetAISummaries()
-{
-	String summaries;
-	const Workspace& wspc = GetIdeWorkspace();
-	for(int i = 0; i < wspc.GetCount(); i++)
-		summaries << LoadFile(SourcePath(wspc[i], "summary.ai"));
-	return summaries;
-}
-
-void Ide::AISummary()
-{
-	SummaryAIDlg dlg;
-
-	if(!dlg.ExecuteOK())
-		return;
-
-	const Workspace& wspc = GetIdeWorkspace();
-	
-	String instructions = R"(
-		You have been supplied with a map of C++ source files. You can get the content
-		of any file in this map if you reply raw unformatted line
-		
-		⚡GET file
-		
-		Provide a short summary of ⚡HEADER - about 200 characters.
-		Do not hesitate to check other files (implementation files, @includes,
-		check the map for candidates) to improve your summary. If ⚡HEADER is missing,
-		do nothing. Do not repeat the header name in the summary."
-	)";
-
-	AIThread ai = AI(instructions, GetAIFileMap());
-	
-	if(ai.error.GetCount()) {
-		Exclamation("\1" + ai.error);
-		return;
-	}
-
-	String base_id = ai.response_id;
-
-	for(int i = 0; i < dlg.list.GetCount(); i++) {
-		if(dlg.list.Get(i, 0)) {
-			int ii = dlg.list.Get(i, 6);
-			String n = wspc[ii];
-			const Package& pkg = wspc.GetPackage(ii);
-			
-			String summary;
-			
-			for(int i = 0; i < pkg.GetCount(); i++) {
-				String hdr = n + "/" + pkg.file[i];
-				if(GetFileExt(hdr) == ".h") {
-					AIThread ai;
-					for(int retry = 0; retry < 3; retry++) {
-						ai = AI(instructions, "\n⚡HEADER " + hdr, base_id);
-						if(ai.error.GetCount() == 0)
-							break;
-					}
-					if(ai.error.GetCount()) {
-						Exclamation("\1" + ai.error);
-						return;
-					}
-					if(ai.result.GetCount())
-						summary << hdr << ": " << ai.result << "\n";
-				}
-			}
-			
-			Upp::SaveFile(SourcePath(~dlg.list.Get(i, 1), "summary.ai"), summary);
-		}
-	}
-}
-
-void Ide::AIPane()
-{
-	if(ai_pane.GetParent())
-		IdeRemoveRight(ai_pane);
-	else
-		IdeSetRight(ai_pane);
-}
-
-void Ide::AIChat()
-{
-	AIPane();
-	ai_prompt.SetFocus();
-}
-
-void Ide::AIPrompt()
-{
-	AIAppendOutput(String() << "&[g@B \1" << ~ai_prompt << "\1]&");
-	AIPrompt2(~ai_prompt);
-	ai_prompt <<= Null;
+	return true;
 }
 
 static String general_instructions = R"(
@@ -435,6 +137,109 @@ static String general_instructions = R"(
 	When reporting a bug or issue to fix, mark its location as 🛠file:line - do not use spaces or `. Use the exact mapped path and an inspected source line number. Do not count the timestamp as a source line or invent a citation.
 )";
 
+bool Ide::AI_DoMore()
+{
+	if(AI_Do()) {
+		LDUMP(r.result);
+		int q = ai_result.FindAfter("⚡GET ");
+		bool stamp = false;
+		if(q < 0) {
+			stamp = true;
+			q = ai_result.FindAfter("⚡GET_TIME ");
+		}
+		if(q >= 0) {
+			String path = ai_result.Mid(q);
+			for(const char *delim : { "\n", "⚡", " " }) {
+				int q = path.Find(delim);
+				if(q >= 0)
+					path.Trim(q);
+			}
+			LLOG("GET FILE " << path);
+			String code;
+			for(String n : GetUppDirs()) {
+				FileIn in(n + "/" + path);
+				if(in) {
+					code << "TIME: " << Time(in.GetTime()) << "\n";
+					if(!stamp) {
+						String raw;
+						int ii = 0;
+						while(!in.IsEof()) {
+							String l = in.GetLine();
+							code << ++ii << ": " << l << "\n";
+							raw << l << "\n";
+						}
+						LDUMP(path);
+						ai_file.GetAdd(path) = raw;
+					}
+					
+					String s = ~ai_prompt;
+					s << "\n" << (stamp ? "GET_TIME " : "GET ") << path;
+					ai_prompt <<= s;
+					ai_prompt.SetCursor(INT_MAX);
+					AI_Start(general_instructions, code, ai_responseId);
+					return false;
+				}
+			}
+		}
+		
+		ai_prev = ai_responseId;
+		return true;
+	}
+	
+	return false;
+}
+
+String Ide::GetAIFileMap()
+{
+	String map;
+	for(const auto& f : ~CodeIndex()) { // do base classes first
+		String n = GetPathNest(f.key);
+		if(n.GetCount()) {
+			map << "⚡FILE " << UnixPath(f.key.Mid(n.GetCount() + 1)) << "\n";
+			String names;
+			Index<String> nests;
+			for(const AnnotationItem& m : f.value.items) {
+				nests.FindAdd(m.nest);
+				bool cpp = findarg(GetFileExt(f.key), ".c", ".cpp") >= 0;
+				if(m.name.GetCount() && !m.isstatic &&
+				   (!cpp && m.kind != CXCursor_MacroDefinition) &&
+				   findarg(m.kind, CXCursor_Constructor, CXCursor_Destructor,
+				                   CXCursor_ConversionFunction, CXCursor_CXXMethod,
+				                   CXCursor_FieldDecl, CXCursor_StructDecl, CXCursor_UnionDecl,
+				                   CXCursor_ClassDecl, CXCursor_EnumDecl) < 0 &&
+				   *m.name != '(') {
+					MergeWith(names, " ", AsString(m.kind) + m.name);
+				}
+			}
+			if(nests.GetCount())
+				map << "TYPES " << Join(nests.GetKeys(), " ") << "\n";
+			if(names.GetCount())
+				map << "NAMES " << names << "\n";
+		}
+	}
+	return map;
+}
+
+void Ide::AIPane()
+{
+	if(ai_pane.GetParent())
+		IdeRemoveRight(ai_pane);
+	else
+		IdeSetRight(ai_pane);
+}
+
+void Ide::AIChat()
+{
+	AIPane();
+	ai_prompt.SetFocus();
+}
+
+void Ide::AIPrompt()
+{
+	AIAppendOutput(String() << "&[g@B \1" << ~ai_prompt << "\1]&");
+	AIPrompt2(~ai_prompt);
+}
+
 void Ide::AIPrompt2(const String& prompt)
 {
 	SaveFile();
@@ -451,15 +256,66 @@ void Ide::AIPrompt2(const String& prompt)
 	else
 		p << ", line " << editor.GetCursorLine() + 1;
 
-	AIThread result = AI(general_instructions, p, ai_prev);
-	AIAppendOutput(AIResult(result));
 	if(!ai_pane.GetParent())
 		AIPane();
+
+	ai_processing_prompt = true;
+	AI_Start(general_instructions, p, ai_prev);
+	ai_prompt.Disable();
+	ai_cancel.Show();
+	ai_animation.Show();
 }
 
-String Ide::AIResult(const AIThread& t)
+Image AInimation()
 {
-	String qtf = MarkdownConverter().ToQtf(t.result);
+	RTIMESTOP("GEN");
+	int q = DPI(30);
+	ImagePainter p(q, q);
+	q /= 2;
+	p.Clear();
+	double base = msecs() * 0.02;
+	double a = DPI(8);
+	double b = DPI(4);
+	double d = DPI(2) / 240.0;
+	for(int i = 0; i < 100; i++) {
+		double fi = base + i * 0.1;
+		auto CH = [&](double m) { return int((sin(fi * m) + 1) * 127); };
+		p.Circle(sin(fi) * a + sin(0.1 * fi) * b + q,
+		         cos(0.9 * fi) * a + cos(0.1 * fi) * b + q,
+		         i * d)
+		  .Fill(100 * Color(CH(1), CH(1.5), CH(7)));
+		p.Circle(sin(1.1 * fi) * a + sin(0.3 * fi) * b + q,
+		         cos(0.7 * fi) * a  + cos(0.2 * fi) * b + q,
+		         i * d)
+		  .Fill(100 * Color(CH(2), CH(0.5), CH(3)));
+	}
+	return p;
+}
+
+void Ide::AIPeriodic()
+{
+	if(ai_processing_prompt) {
+		ai_animation.SetImage(AInimation());
+		if(AI_DoMore()) {
+			if(ai_error.GetCount())
+				AIAppendOutput("[@r " + ai_error);
+			else
+				AIAppendOutput(AIResult());
+			ai_processing_prompt = false;
+			ai_prompt.Enable();
+			ai_prompt <<= Null;
+			ai_cancel.Hide();
+			ai_animation.Hide();
+			ai_prompt.SetFocus();
+		}
+	}
+	else
+		ai_prompt.Enable();
+}
+
+String Ide::AIResult()
+{
+	String qtf = MarkdownConverter().ToQtf(ai_result);
 	for(;;) {
 		String hdr = "⚡";
 		int l = qtf.Find(hdr);
@@ -484,7 +340,7 @@ String Ide::AIResult(const AIThread& t)
 			s << " [^!" + link + "^ Fix]";
 		qtf.Insert(l, s);
 	}
-	ai_prev = t.response_id;
+	ai_prev = ai_responseId;
 	return qtf;
 }
 

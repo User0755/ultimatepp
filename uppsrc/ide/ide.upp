@@ -60,6 +60,7 @@ file
 	Events.cpp,
 	NavDlg.cpp,
 	AI.cpp,
+	AITools.cpp,
 	Log.cpp,
 	MainConfig.cpp,
 	Setup.cpp,

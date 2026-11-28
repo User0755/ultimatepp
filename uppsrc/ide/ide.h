@@ -733,6 +733,8 @@ public:
 	String       ai_qtf;
 	RichTextCtrl ai_output;
 	DocEditEnter ai_prompt;
+	ImageCtrl    ai_animation;
+	Button       ai_cancel;
 
 	// Formats editor's code with Ide format parameters
 	void FormatJSON_XML(bool xml);
@@ -1363,6 +1365,8 @@ public:
 	bool   IsVcpkgAvailable();
 
 	void   CreateSBOM();
+	
+	void   AIPeriodic();
 
 	struct AIThread {
 		String response_id;
@@ -1374,7 +1378,7 @@ public:
 	AIThread AIGemini(const String& instructions, const String& code, const String& prev_id = Null);
 	AIThread AI(const String& instructions, const String& code, const String& prev_id = Null);
 	void     AIPrompt();
-	String   AIResult(const AIThread& t);
+	String   AIResult();
 	void     AILink(const String& link);
 	void     AIPrompt2(const String& prompt);
 	void     AIAppendOutput(const String& qtf);
@@ -1386,6 +1390,22 @@ public:
 
 	String   ai_prev;
 	VectorMap<String, String> ai_file; // the last version uploaded to LLM by GET
+	bool     ai_stop;
+	bool     ai_processing_prompt;
+
+	// Asynchronous AI http
+
+	HttpRequest ai_http;
+	bool        ai_working = false;
+	String      ai_responseText;
+	Value       ai_responseJson;
+	String      ai_responseId;
+	String      ai_error;
+	String      ai_result;
+	
+	void        AI_Start(const String& instructions, const String& prompt, const String& prev_id);
+	bool        AI_Do();
+	bool        AI_DoMore();
 
 	typedef   Ide CLASSNAME;
 

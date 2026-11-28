@@ -820,6 +820,7 @@ void Ide::Periodic()
 		RefreshFrame(GetAssemblyInfoRect());
 		assemblyinfo_visible = b;
 	}
+	AIPeriodic();
 }
 
 struct IndexerProgress : ImageMaker {
