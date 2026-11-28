@@ -1,0 +1,22 @@
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run installer
+        run: .\install.bat /q
+      - name: Verify build outputs
+        run: |
+          if (-not (Test-Path .\umk.exe)) { Write-Error "umk.exe missing"; exit 1 }
+          if (-not (Test-Path .\theide.exe)) { Write-Error "theide.exe missing"; exit 1 }

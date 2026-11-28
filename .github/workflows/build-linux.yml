@@ -1,0 +1,25 @@
+name: Linux build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      NUMBER_OF_CPUS: 4
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install dependencies
+        run: make deps RUN_ARGS="--non-interactive"
+      - name: Build umk
+        run: make umk
+      - name: Build TheIDE
+        run: make theide
+
